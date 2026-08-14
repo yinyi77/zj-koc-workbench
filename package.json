@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test server/lib/*.test.js",
     "preview": "vite preview",
     "start": "node server/server.cjs",
     "docker:build": "docker build -t zj-koc-workbench ."

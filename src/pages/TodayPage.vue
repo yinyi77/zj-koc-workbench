@@ -7,6 +7,7 @@
       </div>
       <div class="page-head-actions">
         <n-button size="small" secondary :loading="loading" @click="load">{{ loading ? '刷新中...' : '刷新' }}</n-button>
+        <n-button size="small" secondary :loading="refreshingHotspots" @click="refreshTodayHotspots">{{ refreshingHotspots ? '重新抓取中...' : '重新抓取热点' }}</n-button>
         <n-button size="small" secondary @click="openHotspotForm">+ 录入热点</n-button>
         <n-button size="small" secondary @click="openTodoForm">+ 添加待办</n-button>
       </div>
@@ -85,6 +86,7 @@
             <div style="font-weight:600;font-size:15px;margin-bottom:4px;cursor:pointer" @click="openRealLink(r.url)">{{ r.title }}</div>
             <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
               <StatusTag :text="r.source" />
+              <StatusTag v-if="r.hotspotCategory" :text="r.hotspotCategory" />
               <span v-if="r.heat" style="font-size:12px;color:var(--ink-faint)">&#x1F525; {{ fmt(r.heat) }}</span>
             </div>
             <div style="font-size:13px;color:var(--ink-dim);line-height:1.6"><b style="color:var(--ink)">结合角度：</b>{{ r.angle || '—' }}</div>
@@ -109,6 +111,8 @@
       <div v-for="h in hotspots" :key="h.id" class="card" style="padding:var(--sp-4) var(--sp-5)">
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
           <StatusTag :text="h.source_label || h.source || h.platform || 'B站'" />
+          <StatusTag v-if="h.hotspotCategory" :text="h.hotspotCategory" />
+          <StatusTag v-if="h.sourceType" :text="h.sourceType" />
           <StatusTag v-if="h.screen_result" :text="h.screen_result" />
           <StatusTag v-if="h.relevance" :text="'相关性' + h.relevance" />
           <span v-if="h.rank" style="font-size:12px;color:var(--ink-faint)">#{{ h.rank }}</span>
@@ -118,8 +122,8 @@
         <div style="font-size:12px;color:var(--ink-faint);margin-bottom:8px">
           {{ h.valid_until ? '有效期至 ' + h.valid_until : (h.up ? 'UP ' + h.up : '') }}
         </div>
-        <div v-if="h.screen_reason || h.risk_note" style="font-size:12px;color:var(--ink-dim);line-height:1.6;margin-bottom:8px">
-          {{ h.screen_reason || h.risk_note }}
+        <div v-if="h.matchReason || h.screen_reason || h.risk_note" style="font-size:12px;color:var(--ink-dim);line-height:1.6;margin-bottom:8px">
+          {{ h.matchReason || h.screen_reason || h.risk_note }}
         </div>
         <img v-if="h.pic" :src="h.pic" style="width:100%;max-height:100px;object-fit:cover;border-radius:8px;margin-bottom:8px;background:var(--gray-100)" @error="e => e.target.style.display='none'" />
         <n-button size="small" secondary :disabled="h.screen_result === '不符合'" @click="toOpportunity(h)">生成机会</n-button>
@@ -239,6 +243,7 @@ const savingCreative = ref(false)
 const creativeLoading = ref(false)
 const savingFocus = ref(false)
 const savingHotspot = ref(false)
+const refreshingHotspots = ref(false)
 const savingTodo = ref(false)
 const todoCount = computed(() => Object.values(todos.value).flat().length)
 const priorityHeadline = computed(() => {
@@ -280,7 +285,7 @@ function openRealLink(url) {
 }
 function isDirectContentLink(item) {
   const url = String(item?.url || '')
-  return /bilibili\.com\/video\//i.test(url) || /douyin\.com\/(video|note)\//i.test(url)
+  return /bilibili\.com\/video\//i.test(url) || /douyin\.com\/(video|note|search)\//i.test(url)
 }
 function openExpiring(item) {
   if (item.url) return openRealLink(item.url)
@@ -302,7 +307,7 @@ async function load() {
   } catch (e) { errors.push(`今日概览：${e.message}`) }
   try {
     const live = (await apiGet('/today/hotspots?limit=100')).list || []
-    // 热词搜索页不冒充发布内容，只展示能直达具体视频/作品的热点。
+    // 具体作品和抖音热榜话题都保留，话题项直达站内搜索结果。
     hotspots.value = live.filter(isDirectContentLink).slice(0, 40)
   } catch (e) { errors.push(`今日热点：${e.message}`) }
   try { recos.value = (await apiGet('/today/recommendations?limit=8')).list || [] } catch (e) { errors.push(`推荐：${e.message}`) }
@@ -311,6 +316,16 @@ async function load() {
     showToast(error.value, true)
   }
   loading.value = false
+}
+
+async function refreshTodayHotspots() {
+  refreshingHotspots.value = true
+  try {
+    const r = await apiPost('/today/refresh', {}, { timeout: 120000 })
+    await load()
+    showToast(`已重新抓取 ${r.hotspotCount || 0} 条热点`)
+  } catch (e) { showToast(e.message, true) }
+  finally { refreshingHotspots.value = false }
 }
 
 async function genCreative(idx) {
@@ -372,7 +387,7 @@ async function toOpportunity(h) {
     if (typeof hid !== 'number') {
       const saved = await apiPost('/hotspots', {
         title: h.title, source_label: h.source, platform: h.source,
-        category: '泛娱乐', heat: Number(h.heat) || 0, trend: '上升',
+        category: h.hotspotCategory || '泛娱乐可借势', heat: Number(h.heat) || 0, trend: '上升',
         url: h.url, description: h.up ? `发布者：${h.up}` : '',
         source: '每日真实热点', status: '候选', created_by: user.value
       })

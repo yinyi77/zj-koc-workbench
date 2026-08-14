@@ -594,8 +594,6 @@ async function generateRuleSummary(campaign) {
  * - 优先调 Gemini 实时评估；失败则回退关键词规则打分（保证页面始终有推荐）
  * - 返回合并后的推荐项：{title, source, url, heat, score, verdict, angle, reason}
  */
-const GAME_KW = ['剑', '魔法', '奇幻', '冒险', '副本', '职业', '坐骑', '剧情', '二创', 'cos', '抽卡', '卡牌', '公会', 'pvp', '版本', '联动', '逆袭', '平民', '养成', '攻略', '整活', '测评', '速通', '怀旧', '情怀', '国风', '仙侠', 'mmo', '角色', '皮肤', '活动', '直播', '武器', '战斗', '团战', '沙雕', '搞笑', '名场面', '神还原', '挑战', '盘点'];
-
 function normalizeTitle(s) {
   return String(s || '').toLowerCase()
     .replace(/[\s　]/g, '')
@@ -633,30 +631,49 @@ function matchHotspot(hotspots, title) {
 }
 
 function ruleRecommend(hotspots, topN) {
-  const scored = hotspots.map(h => {
-    const t = String(h.title || '');
-    let hit = 0;
-    for (const k of GAME_KW) if (t.includes(k)) hit++;
-    return { h, hit, caseCount: Number(h.similarCaseCount) || 0, successCount: Number(h.successfulCaseCount) || 0, relevance: Number(h.relevanceScore) || 0, candidateScore: Number(h.candidateScore) || 0 };
-  }).filter(x => x.hit > 0)
-    .sort((a, b) => (b.successCount - a.successCount) || (b.candidateScore - a.candidateScore) || (b.caseCount - a.caseCount) || (b.hit - a.hit) || ((b.h.heat || 0) - (a.h.heat || 0)));
-  return scored.slice(0, topN).map(x => ({
-    title: x.h.title,
-    score: Math.min(95, 55 + x.hit * 10),
-    verdict: x.hit >= 2 ? '推荐' : '可尝试',
-    angle: '结合游戏相关题材做 KOC 内容',
-    reason: (x.caseCount ? `已有 ${x.caseCount} 条同类落地案例，其中 ${x.successCount} 条高表现；` : '') + '含「' + GAME_KW.filter(k => String(x.h.title).includes(k)).join('、') + '」等游戏相关关键词，可尝试结合《杖剑传说》做内容'
-  }));
+  const categoryConfig = {
+    '杖剑相关': { base: 86, verdict: '强烈推荐', angle: '围绕当前版本重点直接做杖剑选题，优先输出攻略、测评或玩法演示' },
+    '手游热点': { base: 74, verdict: '推荐', angle: '提炼手游玩家共同话题，用杖剑的真实玩法和体验回应' },
+    '泛娱乐可借势': { base: 72, verdict: '推荐', angle: '直接套用该热梗、挑战或表达模板，用杖剑角色、玩法或玩家日常完成内容' }
+  };
+  const groups = {};
+  for (const h of hotspots) {
+    const category = h.hotspotCategory || '泛娱乐可借势';
+    if (!groups[category]) groups[category] = [];
+    groups[category].push(h);
+  }
+  for (const list of Object.values(groups)) list.sort((a, b) => (Number(b.candidateScore) || 0) - (Number(a.candidateScore) || 0));
+  const selected = [];
+  const order = ['杖剑相关', '手游热点', '泛娱乐可借势'];
+  while (selected.length < topN && order.some(category => groups[category]?.length)) {
+    for (const category of order) {
+      if (selected.length >= topN) break;
+      if (groups[category]?.length) selected.push(groups[category].shift());
+    }
+  }
+  const leftovers = Object.values(groups).flat().sort((a, b) => (Number(b.candidateScore) || 0) - (Number(a.candidateScore) || 0));
+  selected.push(...leftovers.slice(0, Math.max(0, topN - selected.length)));
+  return selected.slice(0, topN).map(h => {
+    const config = categoryConfig[h.hotspotCategory] || categoryConfig['泛娱乐可借势'];
+    const caseNote = h.similarCaseCount ? `已有 ${h.similarCaseCount} 条同类落地案例；` : '';
+    return {
+      title: h.title,
+      score: Math.min(95, config.base + Math.round((Number(h.candidateScore) || 0) / 20)),
+      verdict: config.verdict,
+      angle: config.angle,
+      reason: `${caseNote}${h.matchReason || '符合当前热点池方向'}`
+    };
+  });
 }
 
 async function recommendOpportunities({ hotspots, gameContext, topN = 8 }) {
   if (!hotspots || !hotspots.length) return [];
-  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}] ${h.title}（热度:${h.heat != null ? h.heat : '—'}；游戏相关度:${h.relevanceScore || 0}；综合候选分:${h.candidateScore || 0}；同类落地案例:${h.similarCaseCount || 0}条，其中高表现:${h.successfulCaseCount || 0}条）`).join('\n');
+  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}][${h.hotspotCategory || '未分类'}] ${h.title}（热度:${h.heat != null ? h.heat : '—'}；命中理由:${h.matchReason || '—'}；综合候选分:${h.candidateScore || 0}；同类落地案例:${h.similarCaseCount || 0}条，其中高表现:${h.successfulCaseCount || 0}条）`).join('\n');
   const apiKey = getAiApiKey();
   const prompt = `你是《杖剑传说》手游的 KOC 内容营销分析师。下面是当前实时抓取的抖音热榜与B站热门的真实热点。
 游戏背景：${gameContext || '《杖剑传说》是一款剑与魔法的奇幻题材手游，适合测评/攻略/剧情/二创/整活类 KOC 内容。'}
 
-任务：从这些热点中挑出最值得结合《杖剑传说》做 KOC 内容营销的 Top ${topN}（不足则全挑）。优先级依次为：游戏强相关、已有同类游戏落地案例、与当前任务契合、热度及时效性；同时保留少量有自然游戏结合点的泛娱乐内容以扩大候选覆盖。
+任务：从这些热点中挑出最值得结合《杖剑传说》做 KOC 内容营销的 Top ${topN}（不足则全挑）。候选只有三类：杖剑相关、手游共性热点、泛娱乐可借势。三类都要尽量有覆盖；禁止把其他具体游戏的角色、PV、攻略、剧情或版本宣传当成杖剑热点；泛娱乐必须是网络热梗、挑战、模仿模板、玩家可代入情绪等可参与话题，影视、明星、演唱会、综艺、音乐等娱乐行业资讯不得推荐。切入角度必须说清楚如何把该梗套入杖剑的真实角色、玩法或玩家日常，不得虚构为游戏官方内容。
 只输出 JSON，不要其他内容：
 {"picks":[{"title":<热点原标题，必须一字不差>,"score":<1-100 匹配度整数>,"verdict":"强烈推荐"|"推荐"|"可尝试","angle":"结合角度一句话","reason":"推荐理由1-2句"}]}
 
@@ -683,6 +700,7 @@ ${numbered}`;
       source: h ? h.source : '',
       url: h ? h.url : '',
       heat: h ? h.heat : null,
+      hotspotCategory: h ? h.hotspotCategory : '',
       score: Number(p.score) || (h ? 60 : 50),
       verdict: p.verdict || '推荐',
       angle: String(p.angle || ''),

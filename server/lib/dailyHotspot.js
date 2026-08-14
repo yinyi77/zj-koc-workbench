@@ -10,66 +10,105 @@
 const hotspotSource = require('./hotspotSource');
 const ai = require('./ai');
 
-/**
- * 受众相关度：过滤掉与《杖剑传说》用户明显无关的热点，按相关度排序（游戏/二次元类优先）。
- * - 与杖剑传说用户兴趣相关的词（游戏/二次元/泛娱乐/美妆/旅游/绘画/AIGC 等）加权累加得正分；
- * - 无任何兴趣命中且命中「软无关词」→ 排除；中性内容（无兴趣也无无关词）→ 也排除，避免无关噪音；
- * - 有兴趣命中时，仅遇「强硬新闻/时政/社会事件」词才排除（允许"游戏新闻""版号政策"这类）。
- */
-const INTERESTS = [
-  // 游戏 / 二次元（高权重）
-  { k: '游戏', w: 3 }, { k: '手游', w: 3 }, { k: '端游', w: 3 }, { k: '主机', w: 3 }, { k: 'switch', w: 3 }, { k: 'ps5', w: 3 }, { k: 'steam', w: 3 },
-  { k: '攻略', w: 3 }, { k: '电竞', w: 3 }, { k: '直播', w: 2 }, { k: '速通', w: 3 }, { k: 'mod', w: 2 }, { k: 'dlc', w: 2 }, { k: '副本', w: 3 }, { k: '坐骑', w: 3 }, { k: '抽卡', w: 3 }, { k: '氪', w: 2 }, { k: '公测', w: 3 }, { k: '内测', w: 3 }, { k: '开服', w: 3 },
-  { k: '二次元', w: 3 }, { k: '动漫', w: 3 }, { k: '番剧', w: 3 }, { k: '漫画', w: 2 }, { k: '动画', w: 2 }, { k: '国漫', w: 3 }, { k: 'acg', w: 3 }, { k: 'cos', w: 3 }, { k: '手办', w: 2 }, { k: '同人', w: 2 }, { k: '二创', w: 2 }, { k: '声优', w: 2 }, { k: '配音', w: 2 }, { k: '鬼畜', w: 2 },
-  // 泛娱乐 / 创作 / 生活
-  { k: 'up主', w: 2 }, { k: 'vlog', w: 2 }, { k: '整活', w: 2 }, { k: '搞笑', w: 1 }, { k: '萌宠', w: 1 }, { k: '美食', w: 1 }, { k: '探店', w: 1 }, { k: '旅游', w: 2 }, { k: '旅行', w: 2 }, { k: '穿搭', w: 1 }, { k: '时尚', w: 1 }, { k: '美妆', w: 2 }, { k: '护肤', w: 1 }, { k: '化妆', w: 1 }, { k: '综艺', w: 1 }, { k: '影视', w: 1 }, { k: '电影', w: 1 }, { k: '电视剧', w: 1 }, { k: '短剧', w: 1 }, { k: '剧', w: 1 }, { k: '挑战', w: 1 }, { k: '变装', w: 1 }, { k: '卡点', w: 1 },
-  { k: '绘画', w: 2 }, { k: '插画', w: 2 }, { k: '手绘', w: 2 }, { k: '板绘', w: 2 }, { k: '色彩', w: 2 }, { k: '设计', w: 1 }, { k: '摄影', w: 1 }, { k: '场景', w: 2 }, { k: '建模', w: 2 }, { k: '特效', w: 1 }, { k: '短片', w: 1 },
-  { k: '音乐', w: 1 }, { k: '翻唱', w: 1 }, { k: '舞蹈', w: 1 }, { k: '街舞', w: 1 }, { k: '说唱', w: 1 }, { k: 'hiphop', w: 1 },
-  // 科技 / AIGC
-  { k: '科技', w: 2 }, { k: '数码', w: 2 }, { k: 'aigc', w: 3 }, { k: 'ai', w: 2 }, { k: '人工智能', w: 2 }, { k: '大模型', w: 2 }, { k: '3d', w: 2 }, { k: '剪辑', w: 1 }, { k: '后期', w: 1 },
-  // 知识 / 文化 / 其他
-  { k: '知识', w: 1 }, { k: '科普', w: 1 }, { k: '学习', w: 1 }, { k: '校园', w: 1 }, { k: '职场', w: 1 }, { k: '情感', w: 1 }, { k: '剧情', w: 1 }, { k: '悬疑', w: 1 }, { k: '治愈', w: 1 }, { k: '国风', w: 2 }, { k: '汉服', w: 2 }, { k: '古风', w: 2 }, { k: '手工', w: 1 }, { k: 'diy', w: 1 }, { k: '编程', w: 1 }, { k: '代码', w: 1 }, { k: '开源', w: 1 }, { k: '健身', w: 1 }
+/** 热点池只保留三类：杖剑相关、手游共性热点、能被游戏内容直接借用的网络热梗。 */
+const MEME_SIGNALS = ['热梗', '玩梗', '梗图', '梗王', '名场面', '挑战', '接力', '整活', '搞笑', '沙雕', '抽象', '离谱', '反差', '变装', '卡点', '二创', '鬼畜', '模仿', '翻拍', '跟拍', '出圈', '刷屏', '爆火', '火了', '上头', '破防', '笑不活', '谁懂', '主打一个', '一整个', '已老实', '求放过', '显眼包', '电子榨菜', '情绪价值', '仪式感', '松弛感', '班味', '发疯', '赛博', '人机感', '听劝', '泼天富贵', '沉浸式', '万万没想到', '没想到', '原来', '当代年轻人', '打工人', '摸鱼', '社恐', '社牛', 'i人', 'e人'];
+const MEME_FORMAT_RULES = [
+  { label: '参与式挑战', re: /(挑战|接力|大赛|模仿|翻拍|跟拍|变装|卡点|二创|整活|晒出|测试)/ },
+  { label: '网络流行表达', re: /(当我|万万没想到|没想到|原来|谁懂|主打一个|一整个|怎么不算|不是.{0,12}而是|没有.{0,12}一开始|用.{1,12}打开|建议查查|千万别|今天才知道)/ },
+  { label: '玩家可代入情绪', re: /(打工人|摸鱼|下班|周五|周末|开学|社恐|社牛|i人|e人|班味|松弛感|情绪价值|发疯|破防|听劝|反差|仪式感)/ }
 ];
-// 软无关词：仅在没有兴趣命中时才排除（避免误伤"游戏新闻"等）
-const SOFT_EXCLUDE = ['新闻', '时政', '政治', '政策', '主席', '总理', '书记', '地震', '台风', '洪水', '暴雨', '暴雪', '疫情', '病毒', '确诊', '无症状', '股票', '股市', '证券', '基金', '期货', '房产', '楼市', '中考', '高考', '考研', '军事', '战争', '导弹', '制裁', '冲突', '演习', '事故', '遇难', '去世', '讣告', '辟谣', '通报', '处罚', '逮捕', '起诉', '判决', '勒索', '诈骗'];
-// 强无关词：即使有兴趣命中也排除（硬新闻/时政/社会事件）
-const HARD_EXCLUDE = ['时政', '政治', '主席', '总理', '书记', '地震', '台风', '洪水', '疫情', '确诊', '股票', '股市', '证券', '军事', '战争', '导弹', '制裁', '冲突', '演习', '事故', '遇难', '去世', '讣告', '逮捕', '起诉', '判决', '勒索', '诈骗'];
-const GENERIC_CASE_WORDS = new Set(['游戏', '手游', '端游', '直播', '剧情', '角色', '活动', '挑战', '搞笑', '整活', '测评', '攻略', '视频']);
-// 热点池只服务手游营销。游戏分区内的端游、主机和泛游戏内容不能仅因“属于游戏区”就进入。
-const MOBILE_SIGNALS = ['手游', '手机游戏', '移动游戏', '移动端', '安卓', 'android', 'ios'];
-const MOBILE_SUPPORT_SIGNALS = ['抽卡', '卡池', '公测', '开服', '新服', '预约', '版本更新'];
-const MOBILE_GAME_NAMES = ['原神', '崩坏', '星穹铁道', '绝区零', '鸣潮', '王者荣耀', '和平精英', '明日方舟', '第五人格', '火影忍者手游', '英雄联盟手游', '金铲铲', '逆水寒手游', '梦幻西游手游', '蛋仔派对', '恋与深空', '燕云十六声手游'];
-const ZHANGJIAN_SIGNALS = ['杖剑传说', '杖剑', '放置冒险', '放置养成', '奇幻冒险', '剑与魔法', '职业养成', '转职', '副本攻略', '秘境', '坐骑', '公会', '多人组队', '角色养成'];
+// 这些是娱乐行业/人物/作品资讯，不是可让游戏账号参与的网络梗。
+const ENTERTAINMENT_NEWS_EXCLUDE = ['影视', '电影', '电视剧', '短剧', '剧集', '综艺', '演唱会', '音乐节', '新歌', '单曲', '专辑', '翻唱', '首映', '定档', '开播', '杀青', '票房', '预告片', '明星', '艺人', '演员', '歌手', '爱豆', '偶像', '男团', '女团', '组合', '粉丝', '超话', '官宣', '退役', '夺冠', '联赛', '球员', '球队', '比分'];
+const HARD_EXCLUDE = ['时政', '政治', '主席', '总理', '书记', '总统', '首相', '政府', '外交', '关税', '地震', '台风', '洪水', '洪灾', '洪涝', '溃口', '暴雨', '暴雪', '火灾', '爆炸', '坠毁', '疫情', '确诊', '感染', '病例', '疾控', '股票', '股市', '证券', '军事', '战争', '导弹', '制裁', '冲突', '演习', '事故', '遇难', '伤亡', '死亡', '失联', '救援', '抢险', '封堵', '遇险', '预警', '去世', '讣告', '警方', '法院', '检察', '犯罪', '逮捕', '起诉', '判决', '勒索', '诈骗', '辟谣', '通报', '处罚', '高考', '中考', '考研', '房产', '楼市'];
+const MOBILE_TREND_RULES = [
+  { label: '手游行业/榜单', re: /手游.{0,12}(排行榜|榜单|盘点|合集|速览|趋势|报告|市场|行业|数据|收入|流水|买量|出海|厂商|用户|付费|商业化)/ },
+  { label: '手游行业/榜单', re: /(排行榜|榜单|盘点|合集|速览).{0,20}手游/ },
+  { label: '新游趋势/盘点', re: /新游.{0,10}(排行榜|榜单|盘点|合集|趋势|报告)/ },
+  { label: '游戏版号', re: /游戏版号/ },
+  { label: '手游玩家共性话题', re: /(抽卡|卡池|氪金|零氪|月卡党|放置养成).{0,12}(机制|趋势|讨论|玩家|体验|争议|分析|规划)/ },
+  { label: '手游玩家共性话题', re: /(玩家|机制|趋势|讨论|体验|争议).{0,12}(抽卡|卡池|氪金|零氪|月卡党|放置养成)/ }
+];
+const OTHER_GAME_SIGNALS = ['原神', '崩坏', '星穹铁道', '绝区零', '鸣潮', '王者荣耀', '和平精英', '明日方舟', '第五人格', '火影忍者', '英雄联盟', '金铲铲', '逆水寒', '梦幻西游', '蛋仔派对', '恋与深空', '燕云十六声', '阴阳师', '光遇', '永劫无间', '剑网3', '剑网三', '云顶之弈', '鸡械火了', '蓝色星原', '无限暖暖', '叠纸', 'lol', 'dnf', 'cf手游', '穿越火线', '地下城与勇士', '复古传奇', '传奇手游', '腾讯游戏', '网易游戏'];
+const ZHANGJIAN_BRAND_SIGNALS = ['杖剑传说', '杖剑'];
+const ZHANGJIAN_THEME_SIGNALS = ['星陨秘境', '剑与魔法', '放置冒险', '奇幻冒险', '秘境攻略', '平民抽卡', '职业养成'];
 const NON_MOBILE_SIGNALS = ['steam', '主机', 'ps5', 'ps4', 'xbox', 'switch', '单机', '端游', 'pc版', 'pc游戏', '独立游戏', '3a大作'];
+const SPECIFIC_GAME_CONTENT_SIGNALS = ['角色pv', '版本pv', '实机演示', '角色展示', '关卡攻略', '满星攻略', '阵容推荐', '新皮肤', '通关演示', '出装', '符文', '对线', '上分技巧', '强度榜', '全人物解锁', '流程实况'];
+const RISKY_GAME_CONTENT_SIGNALS = ['内置gm', '无限内购', '无限资源', '破解', '破解版', '外挂', '私服', '无偿分享', '兑换码来袭'];
+const GENERIC_MEME_SEARCH_TERMS = new Set(['网络热梗', '全网挑战']);
+const VIRAL_PROOF_RE = /(网络热梗|全网热梗|玩梗|爆火|火遍全网|全网爆火|刷屏|出圈|破亿|全民参与|全网都在)/;
+const MEME_META_CONTENT_RE = /(盘点|合集|三大|最新热梗|近期.{0,8}热梗|锐评|梗知识|学会了吗|烂梗|教育)/;
+const SPECIFIC_MEME_TITLE_RE = /热梗(?:《|“|「|之|：|:)/;
+const GENERIC_CAMPAIGN_WORDS = new Set(['暑期', '活动', '版本', '新版本', '角色', '新角色', '职业', '新职业', '攻略', '抽卡', '测评', '预热', '资料片']);
+
+function hitWords(text, words) { return words.filter(word => text.includes(word)); }
+
+function campaignTerms(campaign) {
+  if (!campaign) return [];
+  return [...new Set(String(campaign.keywords || '').split(/[,，、;；\s]+/).map(x => x.trim().toLowerCase())
+    .filter(x => x.length >= 3 && !GENERIC_CAMPAIGN_WORDS.has(x)))];
+}
+
+function buildSearchKeywords(campaign) {
+  const game = String(campaign?.game_name || '杖剑传说').replace(/[《》]/g, '').trim() || '杖剑传说';
+  return [game, '手游行业', '网络热梗', '全网挑战', ...campaignTerms(campaign).slice(0, 1).map(term => `${game} ${term}`)];
+}
+
+function classifyHotspot(h, campaign = null) {
+  const title = String(h?.title || '').toLowerCase();
+  if (!title) return null;
+  if (h?.targeted && h?.publishedAt) {
+    const ageDays = (Date.now() - new Date(h.publishedAt).getTime()) / 86400000;
+    if (Number.isFinite(ageDays) && ageDays > 45) return null;
+  }
+  const hardHits = hitWords(title, HARD_EXCLUDE);
+  if (hardHits.length) return null;
+  if (hitWords(title, RISKY_GAME_CONTENT_SIGNALS).length) return null;
+  const brandHits = hitWords(title, ZHANGJIAN_BRAND_SIGNALS);
+  const otherGameHits = hitWords(title, OTHER_GAME_SIGNALS);
+  if (otherGameHits.length && !brandHits.length) return null;
+  const taskHits = hitWords(title, campaignTerms(campaign));
+  const themeHits = hitWords(title, ZHANGJIAN_THEME_SIGNALS);
+  if (brandHits.length || taskHits.length || (themeHits.length && !h?.gameVertical)) {
+    const matched = [...brandHits, ...taskHits, ...themeHits];
+    return { category: '杖剑相关', score: 36 + matched.length * 8, matched, reason: `命中杖剑/当前任务词：${matched.join('、')}` };
+  }
+  if (hitWords(title, SPECIFIC_GAME_CONTENT_SIGNALS).length) return null;
+  const mobileHits = [...new Set(MOBILE_TREND_RULES.filter(rule => rule.re.test(title)).map(rule => rule.label))];
+  const nonMobileHits = hitWords(title, NON_MOBILE_SIGNALS);
+  if (mobileHits.length && !nonMobileHits.length) {
+    return { category: '手游热点', score: 24 + mobileHits.length * 5, matched: mobileHits, reason: `手游行业/玩法共性词：${mobileHits.join('、')}` };
+  }
+  // 主动搜索“网络热梗/全网挑战”会混入大量普通视频，必须有明确传播证据才算热点。
+  if (h?.targeted && GENERIC_MEME_SEARCH_TERMS.has(String(h.searchKeyword || ''))) {
+    if (!VIRAL_PROOF_RE.test(title)) return null;
+    // “热梗盘点/合集”只是二手汇总，不提供可直接借用的具体梗；带《梗名》或“热梗之…”的除外。
+    if (MEME_META_CONTENT_RE.test(title) && !SPECIFIC_MEME_TITLE_RE.test(title)) return null;
+  }
+  const isGameVertical = !!h?.gameVertical || /游戏|电竞/.test(String(h?.category || '').toLowerCase());
+  if (isGameVertical || nonMobileHits.length) return null;
+  if (hitWords(title, ENTERTAINMENT_NEWS_EXCLUDE).length) return null;
+  const memeHits = hitWords(title, MEME_SIGNALS);
+  const formatHits = MEME_FORMAT_RULES.filter(rule => rule.re.test(title)).map(rule => rule.label);
+  const matched = [...new Set([...memeHits, ...formatHits])];
+  if (matched.length) {
+    return { category: '泛娱乐可借势', score: 18 + matched.length * 5, matched, reason: `可套用的网络热梗/内容形式：${matched.join('、')}` };
+  }
+  return null;
+}
 
 function mobileGameScore(title) {
-  const text = String(title || '').toLowerCase();
-  const mobileHits = MOBILE_SIGNALS.filter(word => text.includes(word)).length;
-  const supportHits = MOBILE_SUPPORT_SIGNALS.filter(word => text.includes(word)).length;
-  const knownGameHits = MOBILE_GAME_NAMES.filter(word => text.includes(word)).length;
-  const zhangjianHits = ZHANGJIAN_SIGNALS.filter(word => text.includes(word)).length;
-  const nonMobileHits = NON_MOBILE_SIGNALS.filter(word => text.includes(word)).length;
-  // 明确为手游或杖剑相关题材时允许跨端内容；否则端游/主机信号直接排除。
-  if (nonMobileHits && !mobileHits && !zhangjianHits) return -1;
-  if (!mobileHits && !knownGameHits && !zhangjianHits) return 0;
-  return mobileHits * 5 + knownGameHits * 5 + zhangjianHits * 4 + supportHits - nonMobileHits * 2;
+  const result = classifyHotspot({ title });
+  return result && ['杖剑相关', '手游热点'].includes(result.category) ? result.score : 0;
 }
 
 function relevanceScore(title) {
-  if (!title) return 0;
-  const t = String(title).toLowerCase();
-  let s = 0;
-  for (const it of INTERESTS) { if (t.indexOf(it.k) !== -1) s += it.w; }
-  if (s <= 0) {
-    for (const e of SOFT_EXCLUDE) { if (t.indexOf(e) !== -1) return -1; }
-    return 0; // 中性、无兴趣也无排除 → 排除
-  }
-  for (const e of HARD_EXCLUDE) { if (t.indexOf(e) !== -1) return -1; }
-  return s;
+  const text = String(title || '').toLowerCase();
+  if (hitWords(text, HARD_EXCLUDE).length) return -1;
+  if (hitWords(text, ENTERTAINMENT_NEWS_EXCLUDE).length) return -1;
+  return hitWords(text, MEME_SIGNALS).length + MEME_FORMAT_RULES.filter(rule => rule.re.test(text)).length;
 }
 
-// 过滤掉无关热点，按相关度从高到低排序（游戏/二次元类排前）
-function filterRelevant(list, db = null) {
+function filterRelevant(list, db = null, campaign = null) {
   const scored = [];
   const caseTexts = db ? db.prepare(`SELECT title,copy,summary,content_type,play_method,topic_tags,play_count,result
       FROM cases WHERE play_count>0 AND source='项目执行结果'`).all()
@@ -79,31 +118,35 @@ function filterRelevant(list, db = null) {
       play: Number(row.play_count) || 0
     })) : [];
   for (const h of (list || [])) {
-    const mobileScore = mobileGameScore(h.title);
-    if (mobileScore <= 0) continue;
-    const s = Math.max(relevanceScore(h.title), mobileScore);
-    if (s > 0) {
-      const title = String(h.title || '').toLowerCase();
-      const words = INTERESTS.filter(item => item.w >= 2 && title.includes(item.k) && !GENERIC_CASE_WORDS.has(item.k)).map(item => item.k);
-      const matches = caseTexts.filter(item => words.some(word => item.text.includes(word)));
+    const classification = classifyHotspot(h, campaign);
+    if (classification) {
+      const words = [...new Set(classification.matched)];
+      const matches = caseTexts.filter(item => words.some(word => word.length >= 2 && item.text.includes(word)));
       const caseHits = matches.length;
       const successfulCaseCount = matches.filter(item => item.weight > 1).length;
       const caseScore = matches.reduce((sum, item) => sum + item.weight + Math.min(2, Math.log10(Math.max(1, item.play)) / 3), 0);
       const heatScore = Math.max(0, 8 - Math.log2(Math.max(1, Number(h.rank) || 100)));
-      const totalScore = s * 4 + Math.min(24, caseScore * 2) + heatScore;
-      scored.push({ h: { ...h, relevanceScore: s, similarCaseCount: caseHits, successfulCaseCount, candidateScore: Math.round(totalScore * 10) / 10 }, s: totalScore });
+      const totalScore = classification.score + Math.min(24, caseScore * 2) + heatScore;
+      scored.push({ h: { ...h, hotspotCategory: classification.category, matchReason: classification.reason, matchedSignals: classification.matched, relevanceScore: classification.score, similarCaseCount: caseHits, successfulCaseCount, candidateScore: Math.round(totalScore * 10) / 10 }, s: totalScore });
     }
   }
   scored.sort((a, b) => b.s - a.s);
-  // 主池按综合分优先；另为每个平台保留少量榜单探索项，提升覆盖且避免单平台霸榜。
-  const primary = scored.slice(0, 80);
-  const picked = new Set(primary.map(item => item.h.id || `${item.h.source}-${item.h.title}`));
-  for (const source of ['抖音', 'B站']) {
-    const explorers = scored.filter(item => item.h.source === source && !picked.has(item.h.id || `${item.h.source}-${item.h.title}`))
-      .sort((a, b) => (Number(a.h.rank) || 999) - (Number(b.h.rank) || 999)).slice(0, 10);
-    for (const item of explorers) { primary.push(item); picked.add(item.h.id || `${item.h.source}-${item.h.title}`); }
+  const caps = { '杖剑相关': 30, '手游热点': 30, '泛娱乐可借势': 40 };
+  const counts = {};
+  const capped = scored.filter(item => {
+    const category = item.h.hotspotCategory;
+    counts[category] = (counts[category] || 0) + 1;
+    return counts[category] <= (caps[category] || 20);
+  });
+  const buckets = Object.fromEntries(Object.keys(caps).map(category => [category, capped.filter(item => item.h.hotspotCategory === category)]));
+  const balanced = [];
+  const order = ['杖剑相关', '泛娱乐可借势', '手游热点', '泛娱乐可借势'];
+  while (order.some(category => buckets[category]?.length)) {
+    for (const category of order) {
+      if (buckets[category]?.length) balanced.push(buckets[category].shift());
+    }
   }
-  return primary.sort((a, b) => b.s - a.s).map(x => x.h);
+  return balanced.map(x => x.h);
 }
 
 function dateOnly(d) { return d.toISOString().slice(0, 10); }
@@ -115,10 +158,10 @@ function buildGameContext(camp) {
 
 async function generate(db, { force } = {}) {
   if (force) hotspotSource.invalidate(); // 强制时先清空热点源内存缓存，确保真正重抓
-  const hs = await hotspotSource.getHotspots(150);
-  // 每源最多抓 150 条，再按游戏相关度、历史落地案例与热度综合排序。
-  const list = filterRelevant(hs.list || [], db);
   const camp = db.prepare("SELECT * FROM campaigns WHERE status='执行中' ORDER BY (is_current=1) DESC, id DESC LIMIT 1").get();
+  const hs = await hotspotSource.getHotspots(150, { searchKeywords: buildSearchKeywords(camp) });
+  // 泛娱乐只收可参与的网络热梗/挑战/表达模板；娱乐行业资讯和具体其他游戏内容直接排除。
+  const list = filterRelevant(hs.list || [], db, camp);
   const recos = await ai.recommendOpportunities({ hotspots: list, gameContext: buildGameContext(camp), topN: 20 });
   const now = new Date().toISOString();
   const snap = {
@@ -166,4 +209,4 @@ function getSnapshot(db, { force } = {}) {
   return inFlight;
 }
 
-module.exports = { getSnapshot, generate, ensure, dateOnly, filterRelevant, relevanceScore, mobileGameScore };
+module.exports = { getSnapshot, generate, ensure, dateOnly, filterRelevant, relevanceScore, mobileGameScore, classifyHotspot, buildSearchKeywords, campaignTerms };
