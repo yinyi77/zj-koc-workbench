@@ -7,6 +7,7 @@
  * 注意：本模块在运行时通过 Node 全局 fetch 访问外网，需服务端可联网。
  */
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15';
+const BILI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36';
 const CACHE_TTL = 10 * 60 * 1000; // 10 分钟
 
 let cache = { ts: 0, data: null };
@@ -51,6 +52,37 @@ function normalizeBiliGame(j) {
   }));
 }
 
+function stripHtml(value) {
+  return String(value || '').replace(/<[^>]+>/g, '')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
+}
+
+function parseCount(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text || text === '--') return null;
+  if (text.endsWith('万')) return Math.round((Number.parseFloat(text) || 0) * 10000);
+  return Number(text.replace(/,/g, '')) || null;
+}
+
+function normalizeBiliSearch(j, keyword) {
+  const list = (j && j.data && j.data.result) || [];
+  return list.map((x, i) => ({
+    id: 'bili-search-' + x.bvid,
+    source: 'B站',
+    sourceType: '定向搜索',
+    title: stripHtml(x.title),
+    category: '定向搜索',
+    url: 'https://www.bilibili.com/video/' + x.bvid,
+    heat: parseCount(x.play),
+    up: stripHtml(x.author),
+    pic: withHttps(x.pic),
+    rank: i + 1,
+    publishedAt: x.pubdate ? new Date(Number(x.pubdate) * 1000).toISOString() : null,
+    targeted: true,
+    searchKeyword: keyword
+  }));
+}
+
 async function fetchJson(url, opts = {}) {
   const r = await fetch(url, {
     method: opts.method || 'GET',
@@ -83,6 +115,30 @@ async function fetchBilibiliGame(limit) {
     headers: { Referer: 'https://www.bilibili.com/v/game/' }
   });
   return normalizeBiliGame(j).slice(0, Math.max(20, Number(limit) || 20));
+}
+
+async function fetchBilibiliSearch(keywords, limit = 20) {
+  const terms = [...new Set((keywords || []).map(x => String(x || '').trim()).filter(Boolean))].slice(0, 7);
+  if (!terms.length) return [];
+  const pageSize = Math.min(30, Math.max(10, Number(limit) || 20));
+  const merged = [];
+  for (const keyword of terms) {
+    try {
+      const url = `https://api.bilibili.com/x/web-interface/search/type?search_type=video&order=pubdate&page=1&page_size=${pageSize}&keyword=${encodeURIComponent(keyword)}`;
+      const j = await fetchJson(url, { headers: { 'User-Agent': BILI_UA, Referer: 'https://search.bilibili.com/', Origin: 'https://search.bilibili.com', Accept: 'application/json, text/plain, */*' } });
+      merged.push(...normalizeBiliSearch(j, keyword));
+    } catch (e) {
+      try {
+        const fallbackUrl = `https://api.bilibili.com/x/web-interface/search/all/v2?page=1&keyword=${encodeURIComponent(keyword)}`;
+        const fallback = await fetchJson(fallbackUrl, { headers: { 'User-Agent': BILI_UA, Referer: 'https://search.bilibili.com/', Origin: 'https://search.bilibili.com', Accept: 'application/json, text/plain, */*' } });
+        const videoGroup = (fallback?.data?.result || []).find(group => group.result_type === 'video');
+        merged.push(...normalizeBiliSearch({ data: { result: videoGroup?.data || [] } }, keyword));
+      } catch (fallbackError) {
+        console.warn(`[hotspotSource] B站定向搜索失败(${keyword}):`, e.message, fallbackError.message);
+      }
+    }
+  }
+  return [...new Map(merged.map(item => [item.url, item])).values()];
 }
 
 async function getDouyinClientToken(clientKey, clientSecret) {
@@ -177,6 +233,7 @@ async function getHotspots(limit, options = {}) {
   const lim = limit || 20;
   const now = Date.now();
   const cacheKey = JSON.stringify({
+    searchKeywords: options.searchKeywords || [],
     clientKey: options.douyin && options.douyin.clientKey || '',
     deviceId: options.douyin && options.douyin.deviceId || '',
     keywords: options.douyin && options.douyin.keywords || []
@@ -184,10 +241,11 @@ async function getHotspots(limit, options = {}) {
   if (cache.data && cache.key === cacheKey && now - cache.ts < CACHE_TTL) {
     return pack(cache.data, lim);
   }
-  const [biliGameRes, biliGeneralRes, dyRes] = await Promise.allSettled([
+  const [biliGameRes, biliGeneralRes, dyRes, targetedRes] = await Promise.allSettled([
     fetchBilibiliGame(lim),
     fetchBilibili(Math.min(100, lim)),
-    fetchDouyin(lim, options.douyin || {})
+    fetchDouyin(lim, options.douyin || {}),
+    fetchBilibiliSearch(options.searchKeywords || [], 20)
   ]);
   const biliGameList = biliGameRes.status === 'fulfilled' ? biliGameRes.value : [];
   const biliGeneralList = biliGeneralRes.status === 'fulfilled' ? biliGeneralRes.value : [];
@@ -197,12 +255,14 @@ async function getHotspots(limit, options = {}) {
     ? dyRes.value
     : { list: [], status: 'error', error: dyRes.reason && dyRes.reason.message };
   const dyList = dyResult.list || [];
+  const targetedList = targetedRes.status === 'fulfilled' ? targetedRes.value : [];
   const data = {
       bili: biliList,
       biliGameCount: biliGameList.length,
     douyin: dyList,
     douyinStatus: dyResult.status,
     douyinError: dyResult.error || '',
+    targeted: targetedList,
     fetchedAt: new Date().toISOString()
   };
   // 仅当两源都成功才缓存，避免把「抖音抖动为空」缓存成 0 长达 10 分钟
@@ -213,6 +273,7 @@ async function getHotspots(limit, options = {}) {
 function pack(data, lim) {
   const bili = data.bili.slice(0, lim);
   const douyin = data.douyin.slice(0, lim);
+  const targeted = (data.targeted || []).slice(0, Math.min(100, lim));
   // 交错排列（抖音/B站/抖音/B站…），保证前列同时出现两种来源，避免 limit 切片把某一源全部切掉
   const list = [];
   const n = Math.max(bili.length, douyin.length);
@@ -220,11 +281,13 @@ function pack(data, lim) {
     if (i < douyin.length) list.push(douyin[i]);
     if (i < bili.length) list.push(bili[i]);
   }
+  list.unshift(...targeted);
   return {
     list,
     biliCount: bili.length,
     biliGameCount: data.biliGameCount || bili.filter(item => item.gameVertical).length,
     douyinCount: douyin.length,
+    targetedCount: targeted.length,
     fetchedAt: data.fetchedAt,
     sourceStatus: {
       bili: bili.length ? 'ok' : 'fail',
@@ -237,4 +300,4 @@ function pack(data, lim) {
 /** 强制刷新缓存（供前端「实时刷新」按钮调用） */
 function invalidate() { cache = { ts: 0, key: '', data: null }; }
 
-module.exports = { getHotspots, invalidate, fetchBilibili, fetchBilibiliGame, fetchDouyin };
+module.exports = { getHotspots, invalidate, fetchBilibili, fetchBilibiliGame, fetchBilibiliSearch, fetchDouyin };

@@ -663,7 +663,7 @@ function ruleRecommend(hotspots, campaign, topN) {
 async function recommendOpportunities({ hotspots, gameContext, campaign, topN = 8 }) {
   if (!hotspots || !hotspots.length) return [];
   const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
-  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}] ${h.title}（栏目:${h.channel || '今日焦点'}；类型:${h.industryCategory || h.category || '网感热点'}；热度:${h.heat != null ? h.heat : '—'}；发现分:${h.discoveryScore ?? h.candidateScore ?? 0}）`).join('\n');
+  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}] ${h.title}（栏目:${h.channel || '今日焦点'}；分类:${h.hotspotCategory || h.industryCategory || h.category || '网感热点'}；命中理由:${h.matchReason || '—'}；热度:${h.heat != null ? h.heat : '—'}；发现分:${h.discoveryScore ?? h.candidateScore ?? 0}）`).join('\n');
   const apiKey = getAiApiKey();
   const prompt = `你是《${gameName}》当前营销项目的网感内容分析师。下面是从抖音与B站抓取的通用热梗和真实热点池。
 当前项目背景：${gameContext || `当前需要为《${gameName}》寻找可迁移的热点表达。`}
@@ -697,6 +697,9 @@ ${numbered}`;
       url: h ? h.url : '',
       heat: h ? h.heat : null,
       publishedAt: h ? (h.publishedAt || h.published_at || null) : null,
+      channel: h ? (h.channel || '') : '',
+      hotspotCategory: h ? (h.hotspotCategory || '') : '',
+      industryCategory: h ? (h.industryCategory || '') : '',
       score: Number(p.score) || (h ? 60 : 50),
       verdict: p.verdict || '推荐',
       angle: String(p.angle || ''),

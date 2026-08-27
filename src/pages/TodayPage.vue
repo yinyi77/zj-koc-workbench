@@ -100,6 +100,8 @@
             <button type="button" class="hotspot-title-link reco-title" @click="openRealLink(r.url)">{{ r.title }}</button>
             <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
               <StatusTag :text="r.source" />
+              <StatusTag v-if="r.hotspotCategory" :text="r.hotspotCategory" />
+              <StatusTag v-if="r.industryCategory" :text="r.industryCategory" />
               <span v-if="r.heat" style="font-size:12px;color:var(--ink-faint)">&#x1F525; {{ fmt(r.heat) }}</span>
             </div>
             <div style="font-size:13px;color:var(--ink-dim);line-height:1.6"><b style="color:var(--ink)">结合角度：</b>{{ r.angle || '—' }}</div>
@@ -146,7 +148,8 @@
       <div v-for="h in displayHotspots" :key="h.id" class="card" style="padding:var(--sp-4) var(--sp-5)">
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
           <StatusTag :text="h.source_label || h.source || h.platform || 'B站'" />
-          <StatusTag v-if="h.category" :text="activePool === '行业动态' ? (h.industryCategory || '手游') : h.category" />
+          <StatusTag v-if="h.hotspotCategory || h.category" :text="h.hotspotCategory || h.category" />
+          <StatusTag v-if="activePool === '行业动态' && h.industryCategory" :text="h.industryCategory" />
           <StatusTag v-if="h.screen_result" :text="h.screen_result" />
           <span v-if="h.discoveryScore != null" class="tag gray">发现分 {{ h.discoveryScore }}</span>
           <span v-if="h.rank" style="font-size:12px;color:var(--ink-faint)">#{{ h.rank }}</span>
@@ -156,8 +159,8 @@
         <div style="font-size:12px;color:var(--ink-faint);margin-bottom:8px">
           {{ h.publishedAt ? '发布于 ' + formatDateTime(h.publishedAt) + ' · ' : '' }}{{ h.valid_until ? '有效期至 ' + h.valid_until : (h.up ? 'UP ' + h.up : '发布时间未知') }}
         </div>
-        <div v-if="h.screen_reason || h.risk_note" style="font-size:12px;color:var(--ink-dim);line-height:1.6;margin-bottom:8px">
-          {{ h.screen_reason || h.risk_note }}
+        <div v-if="h.matchReason || h.screen_reason || h.risk_note" style="font-size:12px;color:var(--ink-dim);line-height:1.6;margin-bottom:8px">
+          {{ h.matchReason || h.screen_reason || h.risk_note }}
         </div>
         <img v-if="h.pic" :src="h.pic" style="width:100%;max-height:100px;object-fit:cover;border-radius:8px;margin-bottom:8px;background:var(--gray-100)" @error="e => e.target.style.display='none'" />
         <n-button size="small" secondary :disabled="h.screen_result === '不符合'" @click="toOpportunity(h)">生成机会</n-button>
