@@ -1,7 +1,6 @@
 services:
   zj-koc-workbench:
-    build: .
-    image: zj-koc-workbench:latest
+    image: ghcr.io/yinyi77/zj-koc-workbench:latest
     container_name: zj-koc-workbench
     restart: unless-stopped
     ports:

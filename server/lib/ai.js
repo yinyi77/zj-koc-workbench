@@ -250,8 +250,9 @@ function extractJson(text) {
 }
 
 /** 机会评估 */
-async function evaluateOpportunity({ opportunity, hotspot, campaign, cases, experiences, creators }) {
-  const prompt = `你是《杖剑传说》(B站KOC营销) 的资深内容策略顾问。请评估以下内容机会是否值得执行。
+async function evaluateOpportunity({ opportunity, hotspot, campaign }) {
+  const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
+  const prompt = `你是《${gameName}》当前营销项目的热点策略顾问。请评估以下通用网感热点是否值得被当前项目采用。
 
 【当前营销任务】
 ${campaign ? `名称：${campaign.name}\n目标：${campaign.goal}\n判断标准：${campaign.criteria}\n期望方向：${campaign.content_directions}` : '（未关联营销任务）'}
@@ -261,24 +262,13 @@ ${hotspot ? `${hotspot.title}（平台:${hotspot.platform} 热度:${hotspot.heat
 
 【机会】${opportunity.title}
 
-【历史相关案例（近似题材）】
-${(cases || []).slice(0, 5).map(c => `- ${c.title}｜形式:${c.content_type}｜播放:${c.play_count}｜激活:${c.activation_d1 ?? '无'}%｜ROI7:${c.roi_d7 ?? '无'}｜结论:${c.summary}`).join('\n') || '无'}
-
-【团队沉淀经验】
-${(experiences || []).map(e => `- [${e.boost > 0 ? '正向' : '负向'}][${e.category}] ${e.content}`).join('\n') || '无'}
-
-【可选创作者】
-${(creators || []).slice(0, 8).map(c => `- id:${c.id} ${c.name}｜${c.categories}｜粉丝:${c.fans}｜均播:${c.avg_play}｜平均激活:${c.avg_activation ?? '无'}%｜平均ROI7:${c.avg_roi7 ?? '无'}`).join('\n') || '无'}
-
-评估维度：高消费潜力、良好播放量预期、首日激活转化率预期、7日付费ROI预期。
+评估维度：与《${gameName}》及当前策略的适配度、热梗表达是否可迁移、趋势强度、时效窗口和合规风险。热点本身可以不是游戏内容，不要因其来自泛娱乐榜单直接否定；但也不要生硬关联。不要虚构历史案例、作者或效果数据。
 请严格输出以下JSON（不要输出其他内容）：
 {
   "score": 0到100的整数,
-  "verdict": "值得做" 或 "不建议做" 或 "谨慎观察",
-  "analysis": "150字以内的评估分析，说明与任务匹配度、热点窗口期、历史数据依据、风险",
-  "direction": "一句话内容方向建议（具体到题材+形式+钩子）",
-  "recommended_creator_ids": [推荐的创作者id数组，最多3个],
-  "creator_reason": "创作者推荐理由，50字以内"
+  "verdict": "值得跟进" 或 "不建议跟进" 或 "继续观察",
+  "analysis": "150字以内的评估分析，说明项目适配、热梗可复用性、窗口期和风险",
+  "direction": "一句话机会方向建议（具体到题材+形式+钩子）"
 }`;
   const text = await callGemini(prompt);
   const json = extractJson(text);
@@ -313,8 +303,9 @@ ${(campaigns || []).map(c => `- ${c.name}：${c.goal}`).join('\n') || '无'}
 }
 
 /** 机会推荐草稿生成（「重新分析」用）：给出玩法/结合方式/风险/理由 */
-async function generateOpportunityDraft({ hotspot, campaign, creators }) {
-  const prompt = `你是《杖剑传说》B站KOC内容策略顾问。基于以下候选热点与当前营销任务，给出一条可落地的「内容机会推荐草稿」。
+async function generateOpportunityDraft({ hotspot, campaign }) {
+  const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
+  const prompt = `你是《${gameName}》当前营销项目的热点策略顾问。基于以下通用热点与当前策略，给出一条可落地的「机会推荐草稿」。
 
 【当前营销任务】
 ${campaign ? `名称：${campaign.name}\n版本/活动：${campaign.version_event || '—'}\n目标：${campaign.goal}\n重点内容：${campaign.focus_content || '—'}\n期望方向：${campaign.content_directions || '—'}` : '（未关联任务）'}
@@ -326,16 +317,13 @@ ${campaign ? `名称：${campaign.name}\n版本/活动：${campaign.version_even
 标签：${hotspot.tags || '无'}
 风险提示：${hotspot.risk_note || '无'}
 
-【可选创作者】
-${(creators || []).slice(0, 8).map(c => `- ${c.name}｜${c.categories}｜粉丝:${c.fans}｜报价:${c.price || '未知'}`).join('\n') || '无'}
-
 请输出以下JSON（不要输出其他内容）：
 {
   "direction": "一句话内容方向（具体到题材+形式+钩子，如「以新职业星术师首测为钩子，做一期3分钟测评+平民养成路线演示，切片发短视频」）",
   "play_method": "推荐玩法（一句话，具体到形式，如「新职业强度测评+平民养成路线」）",
-  "game_combo": "游戏结合方式（如何把热点与《杖剑传说》宣发结合，一句话）",
+  "game_combo": "项目结合方式（如何把热点与《${gameName}》宣发自然结合，一句话）",
   "risk_note": "风险提示（30字内，结合热点风险与平台规范）",
-  "reason": "推荐理由（结合任务匹配、热点窗口、历史依据，60字内）"
+  "reason": "推荐理由（结合项目适配、热梗可复用性、热点窗口和可转化性，60字内）"
 }`;
   const text = await callGemini(prompt);
   const json = extractJson(text);
@@ -347,12 +335,13 @@ ${(creators || []).slice(0, 8).map(c => `- ${c.name}｜${c.categories}｜粉丝:
  * 生成机会「完整方案」：机会结论补充 + 推荐依据 + 风险判断 + 内容方向建议（结构化）。
  * 返回对象含 platform/suggested_time/cost/play_method/game_combo/direction/basis/risk_json/direction_json/reason。
  */
-async function generateOpportunityPlan({ opportunity, hotspot, campaign, creators }) {
+async function generateOpportunityPlan({ opportunity, hotspot, campaign }) {
   const focus = safeParse(campaign && campaign.focus_detail) || {};
   const prefs = safeParse(campaign && campaign.prefs) || {};
   const goals = safeParse(campaign && campaign.goals) || {};
   const riskRules = safeParse(campaign && campaign.risk_rules) || {};
-  const prompt = `你是《杖剑传说》KOC内容策略顾问。基于候选热点与当前营销任务，生成一条"完整内容机会方案"，输出JSON（不要其他内容）。
+  const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
+  const prompt = `你是《${gameName}》当前营销项目的热点策略顾问。基于通用候选热点与当前策略，生成一条"完整机会方案"，输出JSON（不要其他内容）。不要虚构历史案例、作者或投放效果。
 
 【当前营销任务】
 ${campaign ? `名称：${campaign.name}\n版本/活动：${campaign.version_event || '—'}\n目标：${campaign.goal || '—'}\n重点内容：${campaign.focus_content || '—'}\n传播目标主:${Array.isArray(goals.primary) ? goals.primary.join('、') : '—'} 次:${Array.isArray(goals.secondary) ? goals.secondary.join('、') : '—'}\n营销重点：${JSON.stringify(focus)}\n推荐偏好：${JSON.stringify(prefs)}\n风险规则：${JSON.stringify(riskRules)}` : '（未关联任务）'}
@@ -363,9 +352,6 @@ ${campaign ? `名称：${campaign.name}\n版本/活动：${campaign.version_even
 描述：${hotspot ? (hotspot.description || '无') : '—'}
 标签：${hotspot ? (hotspot.tags || '无') : '—'}
 
-【可选创作者】
-${(creators || []).slice(0, 8).map(c => `- ${c.name}｜${c.categories}｜粉丝:${c.fans}｜报价:${c.price || '未知'}`).join('\n') || '无'}
-
 请输出：
 {
   "platform": "适合平台(从 候选热点平台/任务目标平台 选一个：B站/抖音/微博/小红书/其他)",
@@ -374,10 +360,10 @@ ${(creators || []).slice(0, 8).map(c => `- ${c.name}｜${c.categories}｜粉丝:
   "play_method": "推荐玩法(一句话，具体到形式)",
   "game_combo": "游戏结合方式(一句话)",
   "direction": "一句话内容方向(题材+形式+钩子)",
-  "basis": { "version_fit":"与当前版本契合点(30字内)","hotspot_dev":"热点发展情况(30字内)","cases":"其他游戏/本游戏成功案例(30字内)","history_perf":"历史项目表现(30字内)","creators":"适配的现有创作者(30字内)","feasibility":"制作可行性(30字内)" },
+  "basis": { "version_fit":"与当前项目契合点(30字内)","hotspot_dev":"热点发展情况(30字内)","mobile_fit":"热梗表达可迁移性(30字内)","content_fit":"内容可转化性(30字内)","feasibility":"制作可行性(30字内)" },
   "risk_json": { "opinion":{"level":"高/中/低","note":"舆情风险说明(20字内)"},"copyright":{"level":"高/中/低","note":"版权风险说明(20字内)"},"character":{"level":"高/中/低","note":"角色设定风险说明(20字内)"},"difficulty":{"level":"高/中/低","note":"执行难度说明(20字内)"},"expiry":{"level":"高/中/低","note":"热点过期风险说明(20字内)"},"irreproducible":{"level":"高/中/低","note":"不可复制风险说明(20字内)"} },
   "direction_json": { "core":"核心内容设定(一句话)","angle":"建议切入角度(一句话)","structure":"参考结构(如：引入→展开→高潮→游戏引出)","must_show":"必须体现的信息(逗号分隔)","forbid":"禁止出现的内容(逗号分隔)","ref_cases":"可参考案例(一句话)" },
-  "reason": "推荐理由(结合任务匹配/热点窗口/历史依据，60字内)"
+  "reason": "推荐理由(结合项目适配/热梗可复用/热点窗口/内容可转化性，60字内)"
 }`;
   const text = await callGemini(prompt);
   const json = extractJson(text);
@@ -589,12 +575,12 @@ async function generateRuleSummary(campaign) {
 }
 
 /**
- * 今日推荐机会：从实时热点中 AI 挑选「可结合《杖剑传说》」的热点
+ * 今日推荐机会：从通用热点池中挑选「适合当前项目」的热点
  * - 输入：归一化热点列表（来自 hotspotSource.getHotspots().list）+ 游戏背景文本
  * - 优先调 Gemini 实时评估；失败则回退关键词规则打分（保证页面始终有推荐）
  * - 返回合并后的推荐项：{title, source, url, heat, score, verdict, angle, reason}
  */
-const GAME_KW = ['剑', '魔法', '奇幻', '冒险', '副本', '职业', '坐骑', '剧情', '二创', 'cos', '抽卡', '卡牌', '公会', 'pvp', '版本', '联动', '逆袭', '平民', '养成', '攻略', '整活', '测评', '速通', '怀旧', '情怀', '国风', '仙侠', 'mmo', '角色', '皮肤', '活动', '直播', '武器', '战斗', '团战', '沙雕', '搞笑', '名场面', '神还原', '挑战', '盘点'];
+const MEME_KW = ['热梗', '挑战', '整活', '搞笑', '反转', '名场面', '模仿', '跟拍', '变装', '卡点', 'bgm', '离谱', '破防', '治愈', '共鸣', '盘点', '对比', '复刻', '二创', '鬼畜', '抽象', '上头', '沉浸式', 'vlog'];
 
 function normalizeTitle(s) {
   return String(s || '').toLowerCase()
@@ -632,31 +618,57 @@ function matchHotspot(hotspots, title) {
   return null;
 }
 
-function ruleRecommend(hotspots, topN) {
-  const scored = hotspots.map(h => {
-    const t = String(h.title || '');
-    let hit = 0;
-    for (const k of GAME_KW) if (t.includes(k)) hit++;
-    return { h, hit, caseCount: Number(h.similarCaseCount) || 0, successCount: Number(h.successfulCaseCount) || 0, relevance: Number(h.relevanceScore) || 0, candidateScore: Number(h.candidateScore) || 0 };
-  }).filter(x => x.hit > 0)
-    .sort((a, b) => (b.successCount - a.successCount) || (b.candidateScore - a.candidateScore) || (b.caseCount - a.caseCount) || (b.hit - a.hit) || ((b.h.heat || 0) - (a.h.heat || 0)));
-  return scored.slice(0, topN).map(x => ({
-    title: x.h.title,
-    score: Math.min(95, 55 + x.hit * 10),
-    verdict: x.hit >= 2 ? '推荐' : '可尝试',
-    angle: '结合游戏相关题材做 KOC 内容',
-    reason: (x.caseCount ? `已有 ${x.caseCount} 条同类落地案例，其中 ${x.successCount} 条高表现；` : '') + '含「' + GAME_KW.filter(k => String(x.h.title).includes(k)).join('、') + '」等游戏相关关键词，可尝试结合《杖剑传说》做内容'
-  }));
+function projectKeywords(campaign) {
+  const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
+  const words = [gameName];
+  if (gameName === '杖剑传说') words.push('杖剑', '剑与魔法', '奇幻冒险', '职业养成', '放置养成', '转职', '秘境', '坐骑', '副本');
+  for (const value of [campaign && campaign.keywords, campaign && campaign.focus_content, campaign && campaign.content_directions, campaign && campaign.version_event]) {
+    words.push(...String(value || '').split(/[,，、；;|/\n\s]+/));
+  }
+  return [...new Set(words.map(x => String(x || '').trim().toLowerCase()).filter(x => x.length >= 2))];
 }
 
-async function recommendOpportunities({ hotspots, gameContext, topN = 8 }) {
-  if (!hotspots || !hotspots.length) return [];
-  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}] ${h.title}（热度:${h.heat != null ? h.heat : '—'}；游戏相关度:${h.relevanceScore || 0}；综合候选分:${h.candidateScore || 0}；同类落地案例:${h.similarCaseCount || 0}条，其中高表现:${h.successfulCaseCount || 0}条）`).join('\n');
-  const apiKey = getAiApiKey();
-  const prompt = `你是《杖剑传说》手游的 KOC 内容营销分析师。下面是当前实时抓取的抖音热榜与B站热门的真实热点。
-游戏背景：${gameContext || '《杖剑传说》是一款剑与魔法的奇幻题材手游，适合测评/攻略/剧情/二创/整活类 KOC 内容。'}
+function ruleRecommend(hotspots, campaign, topN) {
+  const projectKw = projectKeywords(campaign);
+  const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
+  const scored = hotspots.map(h => {
+    const t = String(h.title || '').toLowerCase();
+    const projectHits = projectKw.filter(k => t.includes(k));
+    const memeHits = MEME_KW.filter(k => t.includes(k));
+    const discovery = Number(h.discoveryScore ?? h.candidateScore) || 0;
+    const score = Math.min(95, Math.round(projectHits.length * 12 + memeHits.length * 8 + discovery * 0.55 + (h.url ? 5 : 0)));
+    return { h, projectHits, memeHits, discovery, score };
+  }).filter(x => x.projectHits.length > 0 || x.memeHits.length > 0 || x.discovery >= 70)
+    .filter(x => x.score >= 45)
+    .sort((a, b) => b.score - a.score || b.discovery - a.discovery);
+  return scored.slice(0, topN).map(x => {
+    const title = String(x.h.title || '');
+    let angle = `复用原内容的开场钩子和叙事节奏，自然带出《${gameName}》的当前内容重点`;
+    if (/攻略|教学|阵容|打法|保姆级/.test(title)) angle = `拆解原内容的信息结构，转化为《${gameName}》的攻略或版本解读`;
+    else if (/pv|动画|短片|ep|过场/.test(title.toLowerCase())) angle = `借鉴情绪节奏和视觉钩子，制作《${gameName}》角色或版本卖点短片`;
+    else if (/摄影|场景|画面|美术/.test(title)) angle = `从场景审美和视觉形式切入，突出《${gameName}》的世界观与体验氛围`;
+    else if (/福利|开服|活动|版本/.test(title)) angle = '围绕玩家最关心的版本收益与养成规划，制作对比式信息内容';
+    else if (/挑战|整活|搞笑|反转|名场面|日常/.test(title)) angle = `复用挑战、情绪或反转结构，把《${gameName}》当前卖点转成轻量网感内容`;
+    const score = Math.max(40, x.score);
+    return {
+      title: x.h.title,
+      score,
+      verdict: score >= 75 ? '推荐' : '可尝试',
+      angle,
+      reason: `发现分 ${x.discovery || '—'}；${x.projectHits.length ? `命中当前项目词「${x.projectHits.slice(0, 3).join('、')}」` : `命中可复用表达「${x.memeHits.slice(0, 3).join('、') || '高趋势内容'}」`}，仍需验证与当前版本目标的自然关联`
+    };
+  });
+}
 
-任务：从这些热点中挑出最值得结合《杖剑传说》做 KOC 内容营销的 Top ${topN}（不足则全挑）。优先级依次为：游戏强相关、已有同类游戏落地案例、与当前任务契合、热度及时效性；同时保留少量有自然游戏结合点的泛娱乐内容以扩大候选覆盖。
+async function recommendOpportunities({ hotspots, gameContext, campaign, topN = 8 }) {
+  if (!hotspots || !hotspots.length) return [];
+  const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
+  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}] ${h.title}（栏目:${h.channel || '今日焦点'}；类型:${h.industryCategory || h.category || '网感热点'}；热度:${h.heat != null ? h.heat : '—'}；发现分:${h.discoveryScore ?? h.candidateScore ?? 0}）`).join('\n');
+  const apiKey = getAiApiKey();
+  const prompt = `你是《${gameName}》当前营销项目的网感内容分析师。下面是从抖音与B站抓取的通用热梗和真实热点池。
+当前项目背景：${gameContext || `当前需要为《${gameName}》寻找可迁移的热点表达。`}
+
+任务：从通用热点池中挑选最适合当前项目继续研判的 Top ${topN}。热点不必属于游戏，但必须具备可复用的情绪、结构、视觉形式、话题或互动玩法，并能自然迁移到《${gameName}》；硬新闻、纯事件资讯和强行关联不要选择。优先级依次为：当前项目契合、表达模板可复用、趋势强度与新鲜度、执行可行性、合规风险。
 只输出 JSON，不要其他内容：
 {"picks":[{"title":<热点原标题，必须一字不差>,"score":<1-100 匹配度整数>,"verdict":"强烈推荐"|"推荐"|"可尝试","angle":"结合角度一句话","reason":"推荐理由1-2句"}]}
 
@@ -674,21 +686,24 @@ ${numbered}`;
       console.warn('[ai] recommendOpportunities Gemini 失败，回退规则打分:', e.message);
     }
   }
-  if (!picks || !picks.length) picks = ruleRecommend(hotspots, topN);
+  if (!picks || !picks.length) picks = ruleRecommend(hotspots, campaign, topN);
 
   return picks.map(p => {
     const h = matchHotspot(hotspots, p.title);
     return {
       title: p.title,
       source: h ? h.source : '',
+      platform: h ? (h.platform || h.source || h.source_label || '') : '',
       url: h ? h.url : '',
       heat: h ? h.heat : null,
+      publishedAt: h ? (h.publishedAt || h.published_at || null) : null,
       score: Number(p.score) || (h ? 60 : 50),
       verdict: p.verdict || '推荐',
       angle: String(p.angle || ''),
       reason: String(p.reason || '')
     };
-  }).filter(x => x.url); // 必须能匹配到真实热点才返回
+  }).filter(x => x.url)
+    .sort((a, b) => b.score - a.score); // 必须能匹配到真实热点才返回，并始终按匹配度排序
 }
 
 /**
@@ -698,8 +713,9 @@ ${numbered}`;
 async function generateCreative({ title, angle, reason, creatorName, user, campaign } = {}) {
   const focus = safeParse(campaign && campaign.focus_detail) || {};
   const goals = safeParse(campaign && campaign.goals) || {};
+  const gameName = String(campaign && campaign.game_name || '杖剑传说').replace(/[《》]/g, '');
   const gameContext = [
-    `游戏名：${campaign?.game_name || '杖剑传说'}`,
+    `项目/游戏名：${gameName}`,
     campaign?.name ? `当前任务：${campaign.name}` : '',
     campaign?.goal ? `任务目标：${campaign.goal}` : '',
     campaign?.version_event ? `当前版本/活动：${campaign.version_event}` : '',
@@ -708,8 +724,8 @@ async function generateCreative({ title, angle, reason, creatorName, user, campa
     focus.selling_point ? `核心卖点：${focus.selling_point}` : '',
     focus.audience ? `目标人群：${focus.audience}` : '',
     goals.primary ? `主要转化目标：${goals.primary}` : ''
-  ].filter(Boolean).join('\n') || '游戏名：杖剑传说';
-  const sys = '你是《杖剑传说》手游的 KOC 内容创意策划，擅长把热点转化为可落地的短视频/图文创意。必须只基于已给出的游戏、任务和版本信息创作，禁止编造官方不存在的角色、系统、联动、剧情或活动。';
+  ].filter(Boolean).join('\n') || `项目/游戏名：${gameName}`;
+  const sys = `你是《${gameName}》当前项目的内容创意策划，擅长把通用热梗和网感热点转化为可落地的短视频/图文创意。必须只基于已给出的项目、任务和版本信息创作，禁止编造官方不存在的角色、系统、联动、剧情或活动。`;
   const prompt = `请基于下面这条「今日推荐机会」产出一份可直接给创作者参考的视频创意方案。
 
 【游戏与运营上下文】
@@ -722,7 +738,7 @@ ${creatorName ? `【目标创作者】${creatorName}` : ''}
 ${user ? `【操作人】${user}` : ''}
 
 【必须遵守】
-- 外部热点只能作为表达钩子或类比，不要写成《杖剑传说》官方内容。
+- 外部热点只能作为表达钩子或类比，不要写成《${gameName}》官方内容。
 - 如果当前上下文没有明确联动、角色或版本名，不要自行添加具体联动名、角色名或版本活动。
 - 常规内容优先围绕游戏自身玩法、职业养成、剧情体验、社交互动、福利节点、版本节奏。
 - 输出要能直接复制给创作者执行，避免空泛营销话术。
@@ -741,7 +757,7 @@ ${user ? `【操作人】${user}` : ''}
 （5-8 个 #话题，利于平台分发）
 
 ## 注意事项
-（结合《杖剑传说》题材与平台规则的 1-3 条提醒）`;
+（结合《${gameName}》题材与平台规则的 1-3 条提醒）`;
 
   try {
     const apiKey = getAiApiKey();
@@ -752,8 +768,8 @@ ${user ? `【操作人】${user}` : ''}
     const t = title || '热点内容';
     const a = angle || '结合游戏题材做内容';
     const fallback = `## 创意标题
-- 《${t}》还能这么玩？杖剑传说玩家看完有代入感
-- 这个热点别硬蹭，杖剑传说可以这样自然接住
+- 《${t}》还能这么玩？${gameName}玩家看完有代入感
+- 这个热点别硬蹭，${gameName}可以这样自然接住
 
 ## 切入角度
 - ${a}
@@ -761,11 +777,11 @@ ${user ? `【操作人】${user}` : ''}
 
 ## 脚本要点
 - 开头：用「${t}」的冲突/名场面钩住注意力
-- 中段：自然过渡到《杖剑传说》的真实玩法、职业养成、剧情体验或当前任务重点
+- 中段：自然过渡到《${gameName}》的真实玩法、内容体验或当前任务重点
 - 结尾：抛互动问题，引导评论区讨论
 
 ## 建议话题/标签
-#杖剑传说 #游戏热点 #蹭热点 #内容营销 #二创
+#${gameName} #网感热点 #热梗创意 #内容营销 #二创
 
 ## 注意事项
 - 热点与游戏的结合需自然，避免生硬嫁接

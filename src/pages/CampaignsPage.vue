@@ -2,29 +2,30 @@
   <div>
     <div class="page-head">
       <div class="page-head-left">
-        <h2>营销任务</h2>
-        <div class="sub">管理营销 Campaign · 设定目标与推荐规则</div>
+        <h2>热点策略配置</h2>
+        <div class="sub">按阶段设定关注目标、关键词、内容方向与风险规则</div>
       </div>
       <div class="page-head-actions">
         <n-button secondary :loading="loading" @click="load">{{ loading ? '刷新中...' : '刷新' }}</n-button>
-        <n-button type="primary" @click="openForm()">+ 新建 Campaign</n-button>
+        <n-button type="primary" @click="openForm()">+ 新建阶段</n-button>
       </div>
     </div>
 
-    <div v-if="loading" class="loading-card"><span>正在加载营销任务...</span><span class="spinner"></span></div>
+    <div v-if="loading" class="loading-card"><span>正在加载策略配置...</span><span class="spinner"></span></div>
     <div v-else-if="error" class="error-card">
       <span>{{ error }}</span>
       <n-button size="small" secondary @click="load">重试</n-button>
     </div>
 
     <div v-else-if="campaigns.length" style="display:flex;flex-direction:column;gap:14px">
-      <n-card v-for="c in campaigns" :key="c.id" class="card card-highlight campaign-card" :bordered="false">
+      <n-card v-for="c in campaigns" :key="c.id" :class="['card', 'card-highlight', 'campaign-card', { 'is-current': c.is_current }]" :bordered="false">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
           <div>
             <h3 style="font-size:16px;font-weight:700;margin-bottom:6px">{{ c.name }}</h3>
             <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <StatusTag :text="c.status || '进行中'" />
               <StatusTag :text="c.priority || '中'" />
+              <span v-if="c.is_current" class="tag blue">当前策略</span>
               <span style="font-size:13px;color:var(--ink-faint)">{{ c.game_name }}</span>
             </div>
           </div>
@@ -34,7 +35,7 @@
             <n-button size="small" type="error" secondary @click="deleteOne(c.id)" :disabled="busyId === c.id">删除</n-button>
           </n-space>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px;font-size:13px">
+        <div class="campaign-metrics">
           <div><span class="tag gray">目标</span><div style="margin-top:4px;font-weight:500">{{ c.goal || '—' }}</div></div>
           <div><span class="tag gray">周期</span><div style="margin-top:4px;font-weight:500">{{ c.start_date || '—' }} ~ {{ c.end_date || '—' }}</div></div>
           <div><span class="tag gray">重点内容</span><div style="margin-top:4px;font-weight:500">{{ c.focus_content || '—' }}</div></div>
@@ -45,13 +46,13 @@
         </div>
       </n-card>
     </div>
-    <EmptyState v-else icon="inbox">暂无营销任务，点击「新建 Campaign」创建</EmptyState>
+    <EmptyState v-else icon="inbox">暂无热点策略，点击「新建阶段」创建</EmptyState>
 
     <!-- Form Modal -->
     <Modal :show="showForm" @close="showForm = false" wide>
-      <template #head><h3>{{ editing ? '编辑' : '新建' }} Campaign</h3></template>
+      <template #head><h3>{{ editing ? '编辑' : '新建' }}热点策略</h3></template>
       <div class="form-grid">
-        <div class="form-row full"><label>Campaign 名称 *</label><n-input v-model:value="form.name" /></div>
+        <div class="form-row full"><label>策略阶段名称 *</label><n-input v-model:value="form.name" /></div>
         <div class="form-row"><label>游戏名称 *</label><n-input v-model:value="form.game_name" /></div>
         <div class="form-row"><label>优先级</label><n-select v-model:value="form.priority" :options="priorityOptions" /></div>
         <div class="form-row"><label>状态</label><n-select v-model:value="form.status" :options="statusOptions" /></div>
@@ -86,7 +87,11 @@ const showForm = ref(false)
 const editing = ref(null)
 const form = ref({})
 const priorityOptions = ['高', '中', '低'].map(v => ({ label: v, value: v }))
-const statusOptions = ['执行中', '未开始', '已结束'].map(v => ({ label: v, value: v }))
+const statusOptions = [
+  { label: '生效中', value: '执行中' },
+  { label: '未开始', value: '未开始' },
+  { label: '已结束', value: '已结束' }
+]
 
 async function load() {
   loading.value = true
@@ -94,6 +99,8 @@ async function load() {
   try {
     const list = await apiGet('/campaigns')
     campaigns.value = [...list].sort((a, b) => {
+      const currentCompare = Number(b.is_current || 0) - Number(a.is_current || 0)
+      if (currentCompare) return currentCompare
       const dateCompare = String(b.start_date || '').localeCompare(String(a.start_date || ''))
       return dateCompare || (Number(b.id) || 0) - (Number(a.id) || 0)
     })
@@ -110,7 +117,14 @@ function openForm(c = null) {
   showForm.value = true
 }
 async function save() {
-  if (!form.value.name.trim()) return showToast('请输入名称', true)
+  const name = String(form.value.name || '').trim()
+  const game = String(form.value.game_name || '').trim()
+  if (name.length < 2) return showToast('策略阶段名称至少填写 2 个字', true)
+  if (!game) return showToast('请输入游戏名称', true)
+  if (form.value.start_date && form.value.end_date && form.value.start_date > form.value.end_date) return showToast('周期结束日期不能早于开始日期', true)
+  if (![form.value.goal, form.value.focus_content, form.value.content_directions].some(value => String(value || '').trim())) {
+    return showToast('传播目标、重点内容和内容方向至少填写一项', true)
+  }
   saving.value = true
   try {
     if (editing.value) await apiPut(`/campaigns/${editing.value.id}`, form.value)
@@ -133,7 +147,7 @@ async function setCurrent(id) {
   busyId.value = id
   try {
     await apiPost(`/campaigns/${id}/set-current`)
-    showToast('已设为当前任务')
+    showToast('已设为当前策略')
     load()
   } catch (e) { showToast(e.message, true) }
   finally { busyId.value = null }

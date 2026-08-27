@@ -14,6 +14,7 @@
 import { computed } from 'vue'
 
 const STATUS_MAP = {
+  '待研判': 'orange', '值得跟进': 'blue', '方案整理中': 'purple', '已输出': 'green',
   '待判断': 'orange', '已采纳': 'blue', '待匹配创作者': 'purple',
   '创作中': 'blue', '待发布': 'orange', '已发布': 'teal',
   '已验证': 'green', '不采用': 'gray', '已过期': 'gray',
@@ -23,7 +24,8 @@ const STATUS_MAP = {
   '可合作': 'green', '合作中': 'blue', '暂停': 'orange', '黑名单': 'red',
   '草稿': 'orange', '已归档': 'gray', '已确认': 'green', '待办': 'orange',
   '沟通中': 'orange', '脚本确认': 'purple', '制作中': 'blue', '数据回收': 'green',
-  'B站': 'bilibili', '抖音': 'douyin', '微博': 'red', '小红书': 'red'
+  'B站': 'bilibili', '抖音': 'douyin', '微博': 'red', '小红书': 'red',
+  '机核': 'gcores', '游戏陀螺': 'tuoluo', '伽马数据': 'gamma'
 }
 const TAG_COLORS = {
   green: { color: '#e7f7df', textColor: '#2f7c42', borderColor: '#cdeabd' },
@@ -34,7 +36,10 @@ const TAG_COLORS = {
   red: { color: '#ffe9e3', textColor: '#c5422a', borderColor: '#f4c2b8' },
   gray: { color: '#eef2ed', textColor: '#66736a', borderColor: '#dce4de' },
   bilibili: { color: '#e2f5ff', textColor: '#167aa8', borderColor: '#a9ddf4' },
-  douyin: { color: '#f8e9f2', textColor: '#a53872', borderColor: '#edbfd7' }
+  douyin: { color: '#f8e9f2', textColor: '#a53872', borderColor: '#edbfd7' },
+  gcores: { color: '#f1edff', textColor: '#6849b8', borderColor: '#d8ccf5' },
+  tuoluo: { color: '#fff0df', textColor: '#a75b13', borderColor: '#f2cfaa' },
+  gamma: { color: '#e9f5ec', textColor: '#33734a', borderColor: '#c8e4d0' }
 }
 
 const props = defineProps({

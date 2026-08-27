@@ -1,8 +1,8 @@
 /**
- * 实时热点源：抖音热榜（官方 aweme 接口）+ B站热门（popular 接口）
+ * 实时热点源：抖音热点关键词视频搜索（开放平台）+ B站综合热门/游戏分区
  * - 归一化为统一结构 {id, source, title, url, heat, up?, pic?, rank}
  * - 内存缓存（默认 10 分钟），单源失败不影响另一源
- * - 抖音失败回退到备用聚合源；两源均失败返回空列表并标记状态
+ * - 抖音只接收可直达的具体视频，不再使用平台总榜或搜索页链接
  *
  * 注意：本模块在运行时通过 Node 全局 fetch 访问外网，需服务端可联网。
  */
@@ -10,6 +10,7 @@ const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/6
 const CACHE_TTL = 10 * 60 * 1000; // 10 分钟
 
 let cache = { ts: 0, data: null };
+let douyinTokenCache = { clientKey: '', token: '', expiresAt: 0 };
 
 function withHttps(pic) {
   if (!pic) return null;
@@ -21,13 +22,15 @@ function normalizeBili(j) {
   return list.map((x, i) => ({
     id: 'bili-' + x.bvid,
     source: 'B站',
+    sourceType: '综合热门榜',
     title: x.title,
     category: x.tname || '游戏',
     url: 'https://www.bilibili.com/video/' + x.bvid,
     heat: x.stat && x.stat.view != null ? x.stat.view : null,
     up: x.owner && x.owner.name,
     pic: withHttps(x.pic),
-    rank: i + 1
+    rank: i + 1,
+    publishedAt: x.pubdate ? new Date(Number(x.pubdate) * 1000).toISOString() : null
   }));
 }
 
@@ -43,27 +46,16 @@ function normalizeBiliGame(j) {
     up: x.owner && x.owner.name,
     pic: withHttps(x.pic),
     rank: i + 1,
-    gameVertical: true
-  }));
-}
-
-function normalizeDouyin(j) {
-  const wl = (j && j.data && j.data.word_list) || [];
-  return wl.map((x, i) => ({
-    id: 'dy-' + encodeURIComponent(x.word || ''),
-    source: '抖音',
-    title: x.word,
-    url: 'https://www.douyin.com/search/' + encodeURIComponent(x.word || ''),
-    heat: x.hot_value != null ? x.hot_value : null,
-    up: null,
-    pic: null,
-    rank: i + 1
+    gameVertical: true,
+    publishedAt: x.pubdate ? new Date(Number(x.pubdate) * 1000).toISOString() : null
   }));
 }
 
 async function fetchJson(url, opts = {}) {
   const r = await fetch(url, {
+    method: opts.method || 'GET',
     headers: Object.assign({ 'User-Agent': UA }, opts.headers || {}),
+    body: opts.body,
     signal: AbortSignal.timeout(opts.timeout || 8000)
   });
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -93,39 +85,87 @@ async function fetchBilibiliGame(limit) {
   return normalizeBiliGame(j).slice(0, Math.max(20, Number(limit) || 20));
 }
 
-async function fetchDouyin(limit) {
-  // 优先用稳定的第三方聚合源（官方 aweme 接口在服务器端常被反爬拦截，仅作回退）
-  // 聚合源偶发抖动，做一次重试以提升稳定性
-  let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const j = await fetchJson('https://v2.xxapi.cn/api/douyinhot', { timeout: 8000 });
-      const arr = (j && j.data) || [];
-      if (arr.length) return normalizeXxapi(j);
-    } catch (e) { lastErr = e; }
+async function getDouyinClientToken(clientKey, clientSecret) {
+  const now = Date.now();
+  if (douyinTokenCache.clientKey === clientKey && douyinTokenCache.token && douyinTokenCache.expiresAt > now + 60_000) {
+    return douyinTokenCache.token;
   }
-  // 回退官方源
-  try {
-    const j = await fetchJson('https://aweme.snssdk.com/aweme/v1/hot/search/list/?device_id=1&aid=1703');
-    return normalizeDouyin(j);
-  } catch (e2) {
-    console.warn('[hotspotSource] 抖音全源失败:', (lastErr && lastErr.message) || '', e2.message);
-    return [];
+  const j = await fetchJson('https://open.douyin.com/oauth/client_token/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'client_credential', client_key: clientKey, client_secret: clientSecret }),
+    timeout: 10_000
+  });
+  const data = j && j.data;
+  if (!data || Number(data.error_code) !== 0 || !data.access_token) {
+    throw new Error((data && data.description) || j.message || '获取抖音 client_token 失败');
   }
+  douyinTokenCache = {
+    clientKey,
+    token: data.access_token,
+    expiresAt: now + Math.max(300, Number(data.expires_in) || 7200) * 1000
+  };
+  return data.access_token;
 }
 
-function normalizeXxapi(j) {
-  const arr = (j && j.data) || [];
-  return arr.map((x, i) => ({
-    id: 'dy-' + encodeURIComponent(x.word || ''),
+function normalizeDouyinVideos(j, keyword, startRank = 1) {
+  const payload = j && j.data && j.data.data;
+  const list = (payload && payload.video_list) || [];
+  return list.map((x, i) => ({
+    id: 'dy-video-' + x.item_id,
     source: '抖音',
-    title: x.word,
-    url: 'https://www.douyin.com/search/' + encodeURIComponent(x.word || ''),
-    heat: x.hot_value != null ? x.hot_value : null,
-    up: null,
-    pic: null,
-    rank: x.position != null ? x.position : (i + 1)
+    sourceType: '热点关键词视频搜索',
+    title: x.title || x.high_quality_text || keyword,
+    category: /游戏|手游|攻略|副本|抽卡|开服|公测/.test(keyword) ? '游戏热点' : '网感热点',
+    url: x.link || ('https://www.douyin.com/video/' + x.item_id),
+    heat: x.statistics && x.statistics.digg_count != null ? x.statistics.digg_count : null,
+    up: x.nickname || null,
+    pic: x.cover || null,
+    rank: startRank + i,
+    keyword,
+    gameVertical: /游戏|手游|攻略|副本|抽卡|开服|公测/.test(keyword),
+    publishedAt: x.create_time ? new Date(Number(x.create_time) * 1000).toISOString() : null
   }));
+}
+
+async function fetchDouyin(limit, options = {}) {
+  const clientKey = String(options.clientKey || '').trim();
+  const clientSecret = String(options.clientSecret || '').trim();
+  const deviceId = String(options.deviceId || '').trim();
+  if (!clientKey || !clientSecret || !/^\d+$/.test(deviceId)) {
+    return { list: [], status: 'needs_config', error: '请配置抖音开放平台 AppID、AppSecret 和设备 ID' };
+  }
+
+  try {
+    const token = await getDouyinClientToken(clientKey, clientSecret);
+    const keywords = [...new Set((options.keywords || ['全网热梗', '热门挑战', '反转整活', '情绪共鸣', '热门BGM', '游戏热梗'])
+      .map(x => String(x || '').trim()).filter(Boolean))].slice(0, 12);
+    const perKeyword = Math.min(20, Math.max(5, Math.ceil((Number(limit) || 20) / Math.max(1, keywords.length))));
+    const settled = await Promise.allSettled(keywords.map(async keyword => {
+      const qs = new URLSearchParams({
+        device_id: deviceId,
+        keyword,
+        count: String(perKeyword),
+        cursor: '0',
+        publish_time: '7',
+        sort_type: '0'
+      });
+      const j = await fetchJson(`https://open.douyin.com/dy_open_api/v1/search/video/?${qs}`, {
+        headers: { 'Content-Type': 'application/json', 'access-token': token },
+        timeout: 12_000
+      });
+      if (Number(j && j.err_no) !== 0) throw new Error((j && j.err_msg) || '抖音视频搜索失败');
+      return normalizeDouyinVideos(j, keyword);
+    }));
+    const errors = settled.filter(x => x.status === 'rejected').map(x => x.reason && x.reason.message).filter(Boolean);
+    const merged = settled.flatMap(x => x.status === 'fulfilled' ? x.value : []);
+    const list = [...new Map(merged.map(item => [item.id, item])).values()]
+      .map((item, index) => ({ ...item, rank: index + 1 }))
+      .slice(0, Math.max(20, Number(limit) || 20));
+    return { list, status: list.length ? 'ok' : (errors.length ? 'error' : 'empty'), error: errors[0] || '' };
+  } catch (e) {
+    return { list: [], status: 'error', error: e.message || '抖音视频搜索失败' };
+  }
 }
 
 /**
@@ -133,25 +173,40 @@ function normalizeXxapi(j) {
  * @param {number} limit 每源最多条数（默认 20）
  * @returns {Promise<{list:Array, biliCount:number, douyinCount:number, fetchedAt:string, sourceStatus:{bili:string,douyin:string}}>}
  */
-async function getHotspots(limit) {
+async function getHotspots(limit, options = {}) {
   const lim = limit || 20;
   const now = Date.now();
-  if (cache.data && now - cache.ts < CACHE_TTL) {
+  const cacheKey = JSON.stringify({
+    clientKey: options.douyin && options.douyin.clientKey || '',
+    deviceId: options.douyin && options.douyin.deviceId || '',
+    keywords: options.douyin && options.douyin.keywords || []
+  });
+  if (cache.data && cache.key === cacheKey && now - cache.ts < CACHE_TTL) {
     return pack(cache.data, lim);
   }
-  const [biliGameRes, biliGeneralRes, dyRes] = await Promise.allSettled([fetchBilibiliGame(lim), fetchBilibili(Math.min(50, lim)), fetchDouyin(lim)]);
+  const [biliGameRes, biliGeneralRes, dyRes] = await Promise.allSettled([
+    fetchBilibiliGame(lim),
+    fetchBilibili(Math.min(100, lim)),
+    fetchDouyin(lim, options.douyin || {})
+  ]);
   const biliGameList = biliGameRes.status === 'fulfilled' ? biliGameRes.value : [];
   const biliGeneralList = biliGeneralRes.status === 'fulfilled' ? biliGeneralRes.value : [];
-  const biliList = [...new Map([...biliGameList, ...biliGeneralList].map(item => [item.url, item])).values()];
-  const dyList = dyRes.status === 'fulfilled' ? dyRes.value : [];
+  // 综合热门优先进入通用发现池，游戏分区用于补充垂类覆盖，不再让游戏榜占满前列。
+  const biliList = [...new Map([...biliGeneralList, ...biliGameList].map(item => [item.url, item])).values()];
+  const dyResult = dyRes.status === 'fulfilled'
+    ? dyRes.value
+    : { list: [], status: 'error', error: dyRes.reason && dyRes.reason.message };
+  const dyList = dyResult.list || [];
   const data = {
       bili: biliList,
       biliGameCount: biliGameList.length,
     douyin: dyList,
+    douyinStatus: dyResult.status,
+    douyinError: dyResult.error || '',
     fetchedAt: new Date().toISOString()
   };
   // 仅当两源都成功才缓存，避免把「抖音抖动为空」缓存成 0 长达 10 分钟
-  if (biliList.length && dyList.length) cache = { ts: now, data };
+  if (biliList.length) cache = { ts: now, key: cacheKey, data };
   return pack(data, lim);
 }
 
@@ -173,12 +228,13 @@ function pack(data, lim) {
     fetchedAt: data.fetchedAt,
     sourceStatus: {
       bili: bili.length ? 'ok' : 'fail',
-      douyin: douyin.length ? 'ok' : 'fail'
+      douyin: data.douyinStatus || (douyin.length ? 'ok' : 'fail'),
+      douyinMessage: data.douyinError || ''
     }
   };
 }
 
 /** 强制刷新缓存（供前端「实时刷新」按钮调用） */
-function invalidate() { cache = { ts: 0, data: null }; }
+function invalidate() { cache = { ts: 0, key: '', data: null }; }
 
 module.exports = { getHotspots, invalidate, fetchBilibili, fetchBilibiliGame, fetchDouyin };

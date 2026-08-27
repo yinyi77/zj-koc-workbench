@@ -1,5 +1,5 @@
 /**
- * 杖剑传说 KOC 内容机会决策与复盘工作台 V3
+ * 通用热梗发现、当前项目适配与机会方案平台
  * 端口: 4567  |  前端: Vue 3 + Vite (dev:5173 / prod:dist)
  */
 const express = require('express');
@@ -45,7 +45,19 @@ const staticDir = fs.existsSync(distDir) ? distDir : publicDir;
 if (staticDir === distDir) {
   console.log('[静态] 使用 Vue 构建产物: dist/');
 }
-app.use(express.static(staticDir));
+app.use(express.static(staticDir, {
+  setHeaders(res, filePath) {
+    // 首页必须每次向服务器确认，避免发布后旧 HTML 继续引用已删除的哈希资源而白屏。
+    if (path.basename(filePath) === 'index.html') {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      return;
+    }
+    // Vite 构建资源带内容哈希，可以安全长期缓存。
+    if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  }
+}));
 
 (async () => {
   const db = await initDb();
@@ -77,7 +89,10 @@ app.use(express.static(staticDir));
 
   app.use('/api', require('./routes/api'));
 
-  app.get('*', (req, res) => res.sendFile(path.join(staticDir, 'index.html')));
+  app.get('*', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.sendFile(path.join(staticDir, 'index.html'));
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     const nets = os.networkInterfaces();
@@ -88,7 +103,7 @@ app.use(express.static(staticDir));
       }
     }
     console.log('==========================================');
-    console.log('  杖剑传说 KOC 工作台 V3 已启动');
+    console.log('  杖剑传说热点机会平台已启动');
     console.log(`  本机访问:   http://localhost:${PORT}`);
     ips.forEach(ip => console.log(`  团队访问:   http://${ip}:${PORT}`));
     const autoStatus = automation.start(db);

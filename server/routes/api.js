@@ -8,6 +8,7 @@ const rec = require('../lib/recommend');
 const creatorAnalysis = require('../lib/creatorAnalysis');
 const opsAnalysis = require('../lib/opsAnalysis');
 const dailyHotspot = require('../lib/dailyHotspot');
+const hotspotSource = require('../lib/hotspotSource');
 const gameNews = require('../lib/gameNews');
 const automation = require('../lib/automation');
 const { fetchProfile } = require('../lib/creatorFetch');
@@ -17,6 +18,13 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 const ok = (res, data) => res.json({ success: true, data });
 const fail = (res, msg, code = 500) => res.status(code).json({ success: false, message: String(msg) });
 const safeParse = (s, fb) => { try { return JSON.parse(s); } catch (e) { return fb; } };
+const normalizePlatform = value => {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/^(b站|bilibili|b\?)$/i.test(text)) return 'B站';
+  if (/^(抖音|douyin|dy)$/i.test(text)) return '抖音';
+  return text;
+};
 
 // ---------- 主页链接 → 粉丝量/昵称 自动抓取回填 ----------
 async function fillAccountFans(home_url, accId) {
@@ -110,9 +118,16 @@ async function enrichCaseClassification(id) {
   } catch (e) { return false; }
 }
 
-/* ============ 今日工作（六模块） ============ */
+/* ============ 热点雷达 ============ */
 const DAY = 86400000;
-function dateOnly(d) { return d.toISOString().slice(0, 10); }
+const APP_TIME_ZONE = process.env.APP_TIME_ZONE || 'Asia/Shanghai';
+const DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: APP_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+function dateOnly(d) { return DATE_FORMATTER.format(d); }
 
 router.get('/today', (req, res) => {
   try {
@@ -151,7 +166,6 @@ router.get('/today', (req, res) => {
 
     // 模块3：今日推荐机会（实时计算，不落库；受风险红线限制的热点不进入推荐）
     const campaigns = activeCamps;
-    const creatorsAll = db.prepare('SELECT * FROM creators').all();
     const recos = [];
     for (const h of db.prepare("SELECT * FROM hotspots WHERE status='候选' AND (screen_result IS NULL OR screen_result!='不符合') ORDER BY heat DESC").all()) {
       if (baseCamp && rec.evaluateRisk(h, baseCamp).blocked) continue; // 风险红线：不推荐
@@ -160,7 +174,7 @@ router.get('/today', (req, res) => {
       else for (const c of campaigns) { const r = rec.scoreHotspot(h, c); if (!best || r.score > best.score) { best = r; bestCamp = c; } }
       let draft = null;
       if (h.ai_draft_json) { try { draft = JSON.parse(h.ai_draft_json); } catch (e) {} }
-      recos.push(rec.buildRecommendation(h, bestCamp, creatorsAll, draft));
+      recos.push(rec.buildRecommendation(h, bestCamp, [], draft));
     }
     recos.sort((a, b) => b.score - a.score);
 
@@ -168,7 +182,7 @@ router.get('/today', (req, res) => {
     const expiring = [];
     for (const o of db.prepare(`SELECT o.*, h.url AS hotspot_url
       FROM opportunities o LEFT JOIN hotspots h ON h.id=o.hotspot_id
-      WHERE o.status NOT IN ('已验证','不采用','已过期') AND o.deadline IS NOT NULL`).all()) {
+      WHERE o.status NOT IN ('已输出','已验证','不采用','已过期','已归档') AND o.deadline IS NOT NULL`).all()) {
       const dl = new Date(o.deadline).getTime();
       let urgency = null, note = '';
       if (dl < todayMs) { urgency = 'missed'; note = '已错过最佳时效'; }
@@ -188,37 +202,25 @@ router.get('/today', (req, res) => {
     const urgencyRank = u => u === 'missed' ? 0 : u === 'today' ? 1 : u === '24h' ? 2 : 3;
     expiring.sort((a, b) => urgencyRank(a.urgency) - urgencyRank(b.urgency));
 
-    // 模块5：执行待办聚合
-    const 待确认机会 = db.prepare("SELECT id,title FROM opportunities WHERE status='待判断'").all().map(r => ({ type: '待确认机会', id: r.id, title: r.title, ref: 'opportunity' }));
-    const 待分配创作者 = db.prepare("SELECT id,title FROM opportunities WHERE status IN ('已采纳','待匹配创作者') AND (matched_creator_ids IS NULL OR matched_creator_ids='')").all().map(r => ({ type: '待分配创作者', id: r.id, title: r.title, ref: 'opportunity' }));
-    const 创作中内容 = db.prepare("SELECT e.id, o.title, e.stage FROM executions e LEFT JOIN opportunities o ON e.opportunity_id=o.id WHERE e.stage IN ('脚本确认','制作中')").all().map(r => ({ type: '创作中内容', id: r.id, title: r.title || '(未命名机会)', ref: 'execution', sub: r.stage }));
-    const 待发布内容 = db.prepare("SELECT e.id, o.title, e.stage FROM executions e LEFT JOIN opportunities o ON e.opportunity_id=o.id WHERE e.stage='待发布'").all().map(r => ({ type: '待发布内容', id: r.id, title: r.title || '(未命名机会)', ref: 'execution', sub: r.stage }));
-    const 延期内容 = db.prepare("SELECT id,title,deadline FROM opportunities WHERE status NOT IN ('已验证','不采用','已过期','待判断') AND deadline IS NOT NULL AND date(deadline) < date('now')").all().map(r => ({ type: '延期内容', id: r.id, title: r.title, ref: 'opportunity', due: r.deadline }));
-    const 数据缺失记录 = db.prepare("SELECT e.id, o.title FROM executions e LEFT JOIN opportunities o ON e.opportunity_id=o.id WHERE e.stage IN ('已发布','数据回收') AND e.roi_d7 IS NULL").all().map(r => ({ type: '数据缺失记录', id: r.id, title: r.title || '(未命名机会)', ref: 'execution' }));
-    const 待确认复盘结论 = db.prepare("SELECT id,title FROM reviews WHERE status='草稿'").all().map(r => ({ type: '待确认复盘结论', id: r.id, title: r.title, ref: 'review' }));
-    const execTodos = { 待确认机会, 待分配创作者, 创作中内容, 待发布内容, 延期内容, 数据缺失记录, 待确认复盘结论 };
+    // 机会跟进聚合：只围绕热点研判和方案输出，不再读取作者、案例或执行数据。
+    const 待研判 = db.prepare("SELECT id,title,deadline FROM opportunities WHERE status IN ('待研判','待判断')").all().map(r => ({ type: '待研判', id: r.id, title: r.title, ref: 'opportunity', due: r.deadline }));
+    const 值得跟进 = db.prepare("SELECT id,title,deadline FROM opportunities WHERE status IN ('值得跟进','已采纳','待匹配创作者')").all().map(r => ({ type: '值得跟进', id: r.id, title: r.title, ref: 'opportunity', due: r.deadline }));
+    const 方案整理中 = db.prepare("SELECT id,title,deadline FROM opportunities WHERE status IN ('方案整理中','创作中','待发布')").all().map(r => ({ type: '方案整理中', id: r.id, title: r.title, ref: 'opportunity', due: r.deadline }));
+    const 一般待办 = db.prepare("SELECT id,title,due_date FROM todos WHERE status='待办'").all().map(r => ({ type: '一般待办', id: r.id, title: r.title, ref: 'todo', due: r.due_date }));
+    const execTodos = { 待研判, 值得跟进, 方案整理中, 一般待办 };
     const todoTotal = Object.values(execTodos).reduce((s, a) => s + a.length, 0);
-
-    // 模块6：近期结果反馈（近7天）
-    const since = dateOnly(new Date(todayMs - 7 * DAY));
-    const recentExecs = db.prepare("SELECT e.*, o.title as opp_title FROM executions e LEFT JOIN opportunities o ON e.opportunity_id=o.id WHERE (e.publish_date >= ? OR (e.stage IN ('已发布','数据回收') AND e.updated_at >= ?))").all(since, since);
-    const published = recentExecs.filter(e => e.stage === '已发布' || e.stage === '数据回收');
-    const highlights = published.filter(e => e.roi_d7 != null && e.roi_d7 >= 1.0).slice(0, 3).map(e => ({ id: e.opportunity_id, title: e.opp_title || '(未命名)', roi: e.roi_d7, play: e.play_count }));
-    const new_directions = db.prepare("SELECT content,category FROM experiences WHERE created_at >= ?").all(since).map(e => ({ content: e.content, category: e.category }));
-    const observe = db.prepare("SELECT id,title FROM opportunities WHERE status IN ('创作中','已采纳','待匹配创作者') AND id NOT IN (SELECT opportunity_id FROM executions)").all().map(r => ({ id: r.id, title: r.title }));
-    const running = published.filter(e => e.roi_d7 == null).map(e => ({ title: e.opp_title || '(未命名)', stage: e.stage }));
 
     const stats = {
       candidateHotspots: candidateHotspots.length,
       recommendations: recos.length,
       expiring: expiring.length,
       todoTotal,
-      published7d: published.length
+      output: db.prepare("SELECT COUNT(*) c FROM opportunities WHERE status IN ('已输出','已发布','已验证')").get().c
     };
 
     ok(res, {
       today, campaignSummary, candidateHotspots, recommendations: recos, expiring, execTodos, todoTotal,
-      recentFeedback: { published_count: published.length, highlights, new_directions, observe, running },
+      recentFeedback: { published_count: 0, highlights: [], new_directions: [], observe: [], running: [] },
       stats
     });
   } catch (e) { fail(res, e.message); }
@@ -239,36 +241,60 @@ const TABLES = {
   creator_videos: ['creator_id','title','url','platform','publish_date','play_count','note','created_by']
 };
 
-/* ============ 今日工作：实时热点 & AI 推荐机会（抖音热榜 + B站热门） ============ */
+/* ============ 热点雷达：今日焦点、手游行业动态 & 当前项目推荐机会 ============ */
 // 注意：以下路由必须在通用 CRUD 循环之前注册，否则会被 /:table 拦截
 
 // 今日候选热点 = 每日快照（每日仅抓取一次 + 分析一次，结果落库持久化）
-router.get('/today/hotspots', async (req, res) => {
+router.get('/today/hotspots', (req, res) => {
   try {
     const db = getDb();
     const limit = Math.min(parseInt(req.query.limit) || 200, 300);
-    const snap = await dailyHotspot.getSnapshot(db);
-    const list = safeParse(snap.hotspots_json, []).slice(0, limit);
+    const snapshotState = dailyHotspot.readSnapshot(db);
+    const snap = snapshotState.snapshot;
+    const list = safeParse(snap.hotspots_json, []).slice(0, limit).map(item => ({
+      ...item,
+      platform: item.platform || item.source || item.source_label || '其他',
+      source_label: item.source_label || item.source || item.platform || '其他'
+    }));
+    const industryArticles = list.filter(x => x.channel === '行业动态' && x.industryNews);
+    const industrySourceCounts = industryArticles.reduce((acc, item) => {
+      const key = item.source || '其他资讯';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
     ok(res, {
       list,
       biliCount: list.filter(x => x.source === 'B站').length,
       douyinCount: list.filter(x => x.source === '抖音').length,
+      industryArticleCount: industryArticles.length,
+      industrySourceCounts,
       fetchedAt: snap.fetched_at,
       analyzedAt: snap.analyzed_at,
       sourceStatus: safeParse(snap.source_status_json, {}),
       daily: true,
-      snapDate: snap.snap_date
+      snapDate: snap.snap_date,
+      displayedSnapDate: snap.snap_date,
+      targetSnapDate: snapshotState.targetDate,
+      hasSnapshot: snapshotState.hasSnapshot,
+      updating: snapshotState.updating,
+      stale: snapshotState.stale,
+      updateStatus: snapshotState.updateStatus,
+      updateError: snapshotState.updateError
     });
   } catch (e) { fail(res, e.message); }
 });
 
 // 今日推荐机会 = 当日快照中的 AI 分析结论（即「分析一次得一次结论」）
-router.get('/today/recommendations', async (req, res) => {
+router.get('/today/recommendations', (req, res) => {
   try {
     const db = getDb();
     const limit = Math.min(parseInt(req.query.limit) || 8, 20);
-    const snap = await dailyHotspot.getSnapshot(db);
-    const list = safeParse(snap.recommendations_json, []).slice(0, limit);
+    const snapshotState = dailyHotspot.readSnapshot(db);
+    const snap = snapshotState.snapshot;
+    const list = safeParse(snap.recommendations_json, [])
+      .map(item => ({ ...item, platform: item.platform || item.source || item.source_label || '其他' }))
+      .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
+      .slice(0, limit);
     ok(res, {
       list,
       fetchedAt: snap.fetched_at,
@@ -276,8 +302,68 @@ router.get('/today/recommendations', async (req, res) => {
       sourceStatus: safeParse(snap.source_status_json, {}),
       cached: true,
       daily: true,
-      snapDate: snap.snap_date
+      snapDate: snap.snap_date,
+      displayedSnapDate: snap.snap_date,
+      targetSnapDate: snapshotState.targetDate,
+      hasSnapshot: snapshotState.hasSnapshot,
+      updating: snapshotState.updating,
+      stale: snapshotState.stale,
+      updateStatus: snapshotState.updateStatus,
+      updateError: snapshotState.updateError
     });
+  } catch (e) { fail(res, e.message); }
+});
+
+// 轻量状态接口：供前端轮询后台快照任务，不触发同步等待。
+router.get('/today/hotspots/status', (req, res) => {
+  try {
+    ok(res, dailyHotspot.getRefreshStatus(getDb()));
+  } catch (e) { fail(res, e.message); }
+});
+
+// 把每日快照中的真实内容按需落到热点表。雷达和机会中心共用该入口，避免两套候选池割裂。
+router.post('/today/hotspots/materialize', async (req, res) => {
+  try {
+    const db = getDb();
+    const snap = await dailyHotspot.getSnapshot(db);
+    const list = safeParse(snap.hotspots_json, []);
+    const body = req.body || {};
+    const item = list.find(row =>
+      (body.id && String(row.id) === String(body.id))
+      || (body.url && row.url === body.url)
+      || (body.title && row.title === body.title)
+    );
+    if (!item || !item.url) return fail(res, '今日热点快照中未找到该真实内容', 404);
+
+    const platform = item.platform || item.source || item.source_label || '其他';
+    let hotspot = db.prepare('SELECT * FROM hotspots WHERE url=? LIMIT 1').get(item.url);
+    if (!hotspot) {
+      hotspot = db.prepare('SELECT * FROM hotspots WHERE title=? AND platform=? ORDER BY id DESC LIMIT 1').get(item.title, platform);
+    }
+
+    if (hotspot) {
+      db.prepare(`UPDATE hotspots SET
+        platform=?, source_label=?, heat=?, url=?,
+        description=CASE WHEN description IS NULL OR description='' THEN ? ELSE description END
+        WHERE id=?`).run(
+        platform, item.sourceType || item.source || platform, Number(item.heat) || 0, item.url,
+        item.up ? `发布者：${item.up}` : '', hotspot.id
+      );
+    } else {
+      // 发现分只代表热点价值，不等于当前项目适配度；入库后保持“待定”等待研判。
+      const relevance = '待定';
+      const inserted = db.prepare(`INSERT INTO hotspots
+        (title,platform,category,heat,trend,source,source_label,url,description,status,relevance,screen_result,screen_reason,created_by)
+        VALUES (?,?,?,?,?,?,?,?,?,'候选',?,'待定','来自通用网感热点快照，等待当前项目适配研判',?)`).run(
+        item.title, platform,
+        item.category || '网感热点',
+        Number(item.heat) || 0, '上升', '每日真实热点', item.sourceType || item.source || platform,
+        item.url, item.up ? `发布者：${item.up}` : '', relevance, body.user || ''
+      );
+      hotspot = db.prepare('SELECT * FROM hotspots WHERE id=?').get(inserted.lastInsertRowid);
+    }
+    saveNow();
+    ok(res, { hotspot: db.prepare('SELECT * FROM hotspots WHERE id=?').get(hotspot.id) });
   } catch (e) { fail(res, e.message); }
 });
 
@@ -1104,6 +1190,11 @@ for (const [table, cols] of Object.entries(TABLES)) {
 
   router.get(`/${table}/:id`, (req, res) => {
     try {
+      if (table === 'opportunities') {
+        return ok(res, getDb().prepare(`SELECT o.*, c.name AS campaign_name, h.title AS hotspot_title, h.url AS hotspot_url
+          FROM opportunities o LEFT JOIN campaigns c ON o.campaign_id=c.id LEFT JOIN hotspots h ON o.hotspot_id=h.id
+          WHERE o.id=?`).get(req.params.id));
+      }
       if (table === 'cases') {
         const selectCols = ['id', ...cols, 'created_at'];
         return ok(res, getDb().prepare(`SELECT ${selectCols.join(',')} FROM cases WHERE id=?`).get(req.params.id));
@@ -1116,7 +1207,9 @@ for (const [table, cols] of Object.entries(TABLES)) {
   router.post(`/${table}`, (req, res) => {
     try {
       const db = getDb();
-      const vals = cols.map(c => req.body[c] === undefined ? null : req.body[c]);
+      const body = { ...req.body };
+      if ((table === 'hotspots' || table === 'opportunities') && body.platform !== undefined) body.platform = normalizePlatform(body.platform);
+      const vals = cols.map(c => body[c] === undefined ? null : body[c]);
       const r = db.prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
       if (table === 'hotspots') {
         const nh = db.prepare('SELECT * FROM hotspots WHERE id=?').get(r.lastInsertRowid);
@@ -1146,7 +1239,10 @@ for (const [table, cols] of Object.entries(TABLES)) {
       const db = getDb();
       const sets = [], vals = [];
       for (const c of cols) {
-        if (req.body[c] !== undefined) { sets.push(`${c}=?`); vals.push(req.body[c]); }
+        if (req.body[c] !== undefined) {
+          sets.push(`${c}=?`);
+          vals.push((table === 'hotspots' || table === 'opportunities') && c === 'platform' ? normalizePlatform(req.body[c]) : req.body[c]);
+        }
       }
       if (table === 'opportunities') sets.push(`updated_at=datetime('now','localtime')`);
       if (!sets.length) return fail(res, '无更新字段', 400);
@@ -1305,7 +1401,7 @@ router.post('/hotspots/:id/to-opportunity', (req, res) => {
     const camp = campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(campaign_id) : null;
     const score = rec.scoreHotspot(h, camp);
     const r = db.prepare(`INSERT INTO opportunities (title,hotspot_id,campaign_id,status,rule_score,rule_detail,created_by) VALUES (?,?,?,?,?,?,?)`)
-      .run(title || h.title, h.id, campaign_id || null, '待判断', score.score, JSON.stringify(score.detail), user || '');
+      .run(title || h.title, h.id, campaign_id || null, '待研判', score.score, JSON.stringify(score.detail), user || '');
     db.prepare("UPDATE hotspots SET status='已转机会' WHERE id=?").run(h.id);
     db.prepare(`INSERT INTO opportunity_logs (opportunity_id,action,note,user) VALUES (?,?,?,?)`)
       .run(r.lastInsertRowid, '创建', `由热点「${h.title}」转化，规则分${score.score}`, user || '');
@@ -1340,12 +1436,11 @@ router.post('/hotspots/:id/analyze', async (req, res) => {
     const camps = rec.activeCampaigns(db);
     let best = null, bestCamp = null;
     for (const c of camps) { const r = rec.scoreHotspot(h, c); if (!best || r.score > best.score) { best = r; bestCamp = c; } }
-    const creators = db.prepare('SELECT * FROM creators').all();
     let draft = null, mode = 'rule', errMsg = null;
-    try { draft = await ai.generateOpportunityDraft({ hotspot: h, campaign: bestCamp, creators }); }
+    try { draft = await ai.generateOpportunityDraft({ hotspot: h, campaign: bestCamp }); }
     catch (e) { mode = 'rule'; errMsg = e.message === 'NO_API_KEY' ? '未配置API Key，已用规则生成' : `AI生成失败，已用规则生成（${e.message.slice(0, 60)}）`; }
     db.prepare('UPDATE hotspots SET ai_draft_json=? WHERE id=?').run(draft ? JSON.stringify(draft) : null, h.id);
-    const recommendation = rec.buildRecommendation(h, bestCamp, creators, draft);
+    const recommendation = rec.buildRecommendation(h, bestCamp, [], draft);
     ok(res, { mode, message: errMsg, draft, recommendation });
   } catch (e) { fail(res, e.message); }
 });
@@ -1359,25 +1454,30 @@ router.post('/hotspots/:id/adopt', async (req, res) => {
     const { campaign_id, draft, user } = req.body;
     const camp = campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(campaign_id) : null;
     const score = rec.scoreHotspot(h, camp);
-    const creators = db.prepare('SELECT * FROM creators').all();
-    let play_method, game_combo, cost, suggested_time, risk_level, risk_note;
+    const fullPlan = rulePlan(null, h, camp);
+    let play_method = fullPlan.play_method, game_combo = fullPlan.game_combo, cost = fullPlan.cost;
+    let suggested_time = fullPlan.suggested_time, risk_level = fullPlan.risk_json?.opinion?.level || '中', risk_note = fullPlan.risk_json?.opinion?.note || '';
     if (draft && (draft.play_method || draft.game_combo)) {
-      play_method = draft.play_method; game_combo = draft.game_combo; risk_note = draft.risk_note;
+      play_method = draft.play_method || play_method;
+      game_combo = draft.game_combo || game_combo;
+      risk_note = draft.risk_note || risk_note;
     }
-    if (!play_method) {
-      const r = rec.buildRecommendation(h, camp, creators, null);
-      play_method = r.play_method; game_combo = r.game_combo; risk_note = r.risk_note;
-      suggested_time = r.suggested_time; risk_level = r.risk_level; cost = r.cost_estimate;
-    }
+    const platform = h.platform || h.source_label || '其他';
+    const status = score.score >= 45 ? '值得跟进' : '待研判';
     const r = db.prepare(`INSERT INTO opportunities
-      (title,hotspot_id,campaign_id,status,rule_score,rule_detail,play_method,game_combo,cost,suggested_time,risk_level,risk_note,hotspot_source,created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(h.title, h.id, campaign_id || null, '已采纳', score.score, JSON.stringify(score.detail),
+      (title,hotspot_id,campaign_id,status,rule_score,rule_detail,play_method,game_combo,cost,suggested_time,risk_level,risk_note,hotspot_source,platform,direction,basis,risk_json,direction_json,plan_generated,created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(h.title, h.id, campaign_id || null, status, score.score, JSON.stringify(score.detail),
         play_method || null, game_combo || null, cost ?? null, suggested_time || h.valid_until || null, risk_level || '中', risk_note || null,
-        h.source_label || h.platform, user || '');
+        h.source_label || platform, platform, fullPlan.direction || null, JSON.stringify(fullPlan.basis || {}),
+        JSON.stringify(fullPlan.risk_json || {}), JSON.stringify(fullPlan.direction_json || {}), 1, user || '');
+    const initialSnapshot = { ...fullPlan, play_method, game_combo, risk_note, platform };
+    db.prepare(`INSERT INTO opportunity_plan_versions (opportunity_id,version_no,plan_json,mode,created_by)
+      VALUES (?,1,?,'rule',?)`).run(r.lastInsertRowid, JSON.stringify(initialSnapshot), user || '');
     db.prepare("UPDATE hotspots SET status='已转机会' WHERE id=?").run(h.id);
     db.prepare(`INSERT INTO opportunity_logs (opportunity_id,action,note,user) VALUES (?,?,?,?)`)
-      .run(r.lastInsertRowid, '采纳推荐', `由热点「${h.title}」采纳，规则分${score.score}`, user || '');
+      .run(r.lastInsertRowid, '生成机会', `由热点「${h.title}」生成完整方案，规则分${score.score}`, user || '');
+    saveNow();
     ok(res, { id: r.lastInsertRowid, score });
   } catch (e) { fail(res, e.message); }
 });
@@ -1391,21 +1491,11 @@ router.post('/opportunities/:id/evaluate', async (req, res) => {
     const h = o.hotspot_id ? db.prepare('SELECT * FROM hotspots WHERE id=?').get(o.hotspot_id) : null;
     const camp = o.campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(o.campaign_id) : null;
 
-    // 相关案例：标签重叠
-    const kws = rec.tokenize(`${o.title} ${h ? h.tags : ''} ${h ? h.title : ''}`);
-    const allCases = db.prepare('SELECT * FROM cases').all();
-    const relCases = allCases.filter(c => {
-      const t = `${c.topic_tags} ${c.content_type} ${c.title}`.toLowerCase();
-      return kws.some(k => t.includes(k.toLowerCase()));
-    }).slice(0, 5);
-    const exps = db.prepare("SELECT * FROM experiences WHERE status='已确认'").all();
-    const creators = db.prepare('SELECT * FROM creators').all();
-
     // 规则打分（始终计算，作为兜底和对照）
     const ruleResult = h ? rec.scoreHotspot(h, camp) : { score: null, verdict: null, detail: [] };
     let mode = 'ai', aiResult = null, errMsg = null;
     try {
-      aiResult = await ai.evaluateOpportunity({ opportunity: o, hotspot: h, campaign: camp, cases: relCases, experiences: exps, creators });
+      aiResult = await ai.evaluateOpportunity({ opportunity: o, hotspot: h, campaign: camp });
     } catch (e) {
       mode = 'rule';
       errMsg = e.message === 'NO_API_KEY' ? '未配置API Key，已用规则打分' : `AI调用失败(${e.message.slice(0, 80)})，已降级为规则打分`;
@@ -1422,17 +1512,7 @@ router.post('/opportunities/:id/evaluate', async (req, res) => {
     db.prepare(`INSERT INTO opportunity_logs (opportunity_id,action,note,user) VALUES (?,?,?,?)`)
       .run(o.id, 'AI评估', mode === 'ai' ? `AI评分${aiResult.score}（${aiResult.verdict}）` : `规则评分${ruleResult.score}（${ruleResult.verdict}）`, req.body.user || '');
 
-    // 创作者推荐补充（AI给了就用AI的，否则规则）
-    let creatorRecs = [];
-    if (aiResult && Array.isArray(aiResult.recommended_creator_ids) && aiResult.recommended_creator_ids.length) {
-      creatorRecs = aiResult.recommended_creator_ids
-        .map(id => creators.find(c => c.id === id)).filter(Boolean)
-        .map(c => ({ creator: c, reason: aiResult.creator_reason || 'AI推荐' }));
-    } else {
-      creatorRecs = rec.recommendCreators(o, h, camp);
-    }
-
-    ok(res, { mode, message: errMsg, ai: aiResult, rule: ruleResult, creatorRecs });
+    ok(res, { mode, message: errMsg, ai: aiResult, rule: ruleResult });
   } catch (e) { fail(res, e.message); }
 });
 
@@ -1474,7 +1554,7 @@ function autoDepositCase(db, opportunityId) {
 const safeParseJson = s => { try { return JSON.parse(s); } catch (e) { return null; } };
 
 // 规则兜底：生成机会完整方案（机会结论补充 + 推荐依据 + 风险判断 + 内容方向建议）
-function rulePlan(o, h, camp, creators) {
+function rulePlan(o, h, camp) {
   const gameRaw = camp && camp.game_name ? String(camp.game_name).replace(/[《》]/g, '') : '杖剑传说';
   const game = `《${gameRaw}》`;
   const platform = (h && h.platform) || (camp && camp.target_platform) || 'B站';
@@ -1482,7 +1562,7 @@ function rulePlan(o, h, camp, creators) {
   const prefs = camp && camp.prefs ? safeParseJson(camp.prefs) : {};
   const riskRules = camp && camp.risk_rules ? safeParseJson(camp.risk_rules) : {};
   let recR = null;
-  try { recR = rec.buildRecommendation(h, camp, creators, null); } catch (e) {}
+  try { recR = rec.buildRecommendation(h, camp, [], null); } catch (e) {}
   const play_method = (recR && recR.play_method) || (focusD.play ? `结合${focusD.play}做内容` : '结合版本内容做内容');
   const game_combo = (recR && recR.game_combo) || `将热点与${game}宣发结合`;
   const cost = (prefs && prefs.cost) || 6000;
@@ -1503,14 +1583,12 @@ function rulePlan(o, h, camp, creators) {
     structure: '引入热点→展开玩法→游戏结合→行动引导',
     must_show: (focusD.selling_point || '版本卖点'),
     forbid: '不得夸大强度/不得暗示付费必赢',
-    ref_cases: '参考历史高ROI题材'
+    ref_cases: '参考平台原热点结构'
   };
   const basis = {
     version_fit: `与${camp ? (camp.version_event || '当前版本') : '当前版本'}强相关`,
     hotspot_dev: `热点趋势${(h && h.trend) || '上升'}`,
-    cases: '历史案例库含高ROI题材',
-    history_perf: '攻略/养成类历史表现好',
-    creators: (creators && creators.length) ? `适配 ${creators.slice(0, 2).map(c => c.name).join('、')}` : '待补充创作者',
+    reason: '依据当前项目适配、热梗可复用性、趋势强度、新鲜度和风险综合判断',
     feasibility: '素材可得，制作可行'
   };
   return { platform, suggested_time, cost, play_method, game_combo, direction, basis, risk_json, direction_json, reason: (recR && recR.reason) || '任务强相关+热点窗口+历史依据' };
@@ -1534,12 +1612,11 @@ router.post('/opportunities/:id/generate-direction', async (req, res) => {
     if (!o) return fail(res, '机会不存在', 404);
     const h = o.hotspot_id ? db.prepare('SELECT * FROM hotspots WHERE id=?').get(o.hotspot_id) : null;
     const camp = o.campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(o.campaign_id) : null;
-    const creators = db.prepare('SELECT * FROM creators').all();
     // 手动创建的机会可能没有关联热点，用机会标题拼一个最小热点对象给 AI
     const hsForAi = h || { title: o.title, category: '手动创建', platform: camp ? (camp.target_platform || 'B站') : 'B站', heat: null, trend: '—', description: o.decision || '', tags: '' };
     let draft = null, mode = 'rule', errMsg = null;
     try {
-      draft = await ai.generateOpportunityDraft({ hotspot: hsForAi, campaign: camp, creators });
+      draft = await ai.generateOpportunityDraft({ hotspot: hsForAi, campaign: camp });
       if (!draft || !draft.direction) throw new Error('NO_DIRECTION');
       mode = 'ai';
     } catch (e) {
@@ -1568,17 +1645,16 @@ router.post('/opportunities/:id/generate-plan', async (req, res) => {
     if (!o) return fail(res, '机会不存在', 404);
     const h = o.hotspot_id ? db.prepare('SELECT * FROM hotspots WHERE id=?').get(o.hotspot_id) : null;
     const camp = o.campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(o.campaign_id) : null;
-    const creators = db.prepare('SELECT * FROM creators').all();
     const hsForAi = h || { title: o.title, category: '手动创建', platform: (camp && camp.target_platform) || 'B站', heat: null, trend: '—', description: o.decision || '', tags: '' };
     let plan = null, mode = 'rule', errMsg = null;
     try {
-      plan = await ai.generateOpportunityPlan({ opportunity: o, hotspot: hsForAi, campaign: camp, creators });
+      plan = await ai.generateOpportunityPlan({ opportunity: o, hotspot: hsForAi, campaign: camp });
       if (!plan || !plan.direction) throw new Error('NO_PLAN');
       mode = 'ai';
     } catch (e) {
       mode = 'rule';
       errMsg = e.message === 'NO_API_KEY' ? '未配置API Key，已用规则生成' : `AI生成失败，已用规则生成（${e.message.slice(0, 60)}）`;
-      plan = rulePlan(o, h, camp, creators);
+      plan = rulePlan(o, h, camp);
     }
     const rj = plan.risk_json || {};
     const sets = ['platform=?', 'suggested_time=?', 'cost=?', 'play_method=?', 'game_combo=?', 'direction=?', 'basis=?', 'risk_json=?', 'direction_json=?', 'risk_level=?', 'risk_note=?', 'plan_generated=1', "updated_at=datetime('now','localtime')"];
@@ -1596,8 +1672,35 @@ router.post('/opportunities/:id/generate-plan', async (req, res) => {
       (rj.opinion && rj.opinion.note) || null
     ];
     db.prepare(`UPDATE opportunities SET ${sets.join(',')} WHERE id=?`).run(...vals, o.id);
+    const versionNo = Number(db.prepare('SELECT COALESCE(MAX(version_no),0)+1 AS n FROM opportunity_plan_versions WHERE opportunity_id=?').get(o.id).n) || 1;
+    const snapshot = {
+      title: o.title,
+      platform: vals[0],
+      suggested_time: vals[1],
+      cost: vals[2],
+      play_method: vals[3],
+      game_combo: vals[4],
+      direction: vals[5],
+      basis: plan.basis || {},
+      risk_json: plan.risk_json || {},
+      direction_json: plan.direction_json || {},
+      risk_level: vals[9],
+      risk_note: vals[10]
+    };
+    db.prepare(`INSERT INTO opportunity_plan_versions (opportunity_id,version_no,plan_json,mode,created_by)
+      VALUES (?,?,?,?,?)`).run(o.id, versionNo, JSON.stringify(snapshot), mode, req.body.user || '');
     db.prepare(`INSERT INTO opportunity_logs (opportunity_id,action,note,user) VALUES (?,?,?,?)`).run(o.id, '生成方案', mode === 'ai' ? 'AI生成完整方案' : '规则生成完整方案', req.body.user || '');
-    ok(res, { mode, message: errMsg, plan });
+    saveNow();
+    ok(res, { mode, message: errMsg, plan, version: versionNo });
+  } catch (e) { fail(res, e.message); }
+});
+
+router.get('/opportunities/:id/plan-versions', (req, res) => {
+  try {
+    const rows = getDb().prepare(`SELECT id,opportunity_id,version_no,plan_json,mode,created_by,created_at
+      FROM opportunity_plan_versions WHERE opportunity_id=? ORDER BY version_no DESC`).all(req.params.id)
+      .map(row => ({ ...row, plan: safeParse(row.plan_json, {}) }));
+    ok(res, rows);
   } catch (e) { fail(res, e.message); }
 });
 
@@ -1607,10 +1710,8 @@ router.post('/opportunities/generate-candidates', async (req, res) => {
     const db = getDb();
     const camps = rec.activeCampaigns(db);
     const camp = camps[0];
-    if (!camp) return fail(res, '请先在「营销任务」设置当前任务', 400);
+    if (!camp) return fail(res, '请先在「策略配置」设置当前策略', 400);
     const templates = db.prepare('SELECT * FROM creative_templates ORDER BY usage_count DESC').all();
-    const cases = db.prepare("SELECT * FROM cases WHERE result IN ('爆款','良好') ORDER BY roi_d7 DESC").all();
-    const creators = db.prepare('SELECT * FROM creators').all();
     const focusD = camp.focus_detail ? safeParseJson(camp.focus_detail) : {};
     const goals = camp.goals ? safeParseJson(camp.goals) : {};
     const prefs = camp.prefs ? safeParseJson(camp.prefs) : {};
@@ -1618,7 +1719,7 @@ router.post('/opportunities/generate-candidates', async (req, res) => {
     const candidates = [];
     const sources = templates.length ? templates : [null];
     for (const t of sources.slice(0, 6)) {
-      const tpl = t ? { name: t.name, core: t.core_logic, hotspot: t.applicable_hotspot, node: t.applicable_node, creator_type: t.creator_type, cost: t.cost, cases: t.cases } : null;
+      const tpl = t ? { name: t.name, core: t.core_logic, hotspot: t.applicable_hotspot, node: t.applicable_node } : null;
       const node = (tpl && tpl.node) || (Array.isArray(goals.primary) && goals.primary[0]) || '版本窗口';
       const play = (tpl && tpl.core) || `结合${focusD.play || '版本内容'}做内容`;
       const title = tpl ? `${tpl.name}（候选）` : `基于任务目标的原创机会（候选）`;
@@ -1633,9 +1734,7 @@ router.post('/opportunities/generate-candidates', async (req, res) => {
         basis: {
           version_fit: `对齐${camp.version_event || '当前版本'}`,
           hotspot_dev: tpl ? `复用模板「${tpl.name}」` : '原创机会',
-          cases: tpl ? (tpl.cases || '—') : (cases[0] ? cases[0].title : '—'),
-          history_perf: '参考历史高ROI题材',
-          creators: (creators && creators.length) ? creators.slice(0, 2).map(c => c.name).join('、') : '待补充',
+          reason: '按策略目标与机会模板生成',
           feasibility: '素材可得，制作可行'
         },
         risk_json: {
@@ -1644,7 +1743,7 @@ router.post('/opportunities/generate-candidates', async (req, res) => {
           expiry: { level: '中', note: '依赖窗口' }, irreproducible: { level: tpl ? '低' : '中', note: tpl ? '模板可复用' : '需验证' }
         },
         suggested_template_id: t ? t.id : null,
-        reason: '系统综合创意模板/任务目标/历史案例生成'
+        reason: '系统综合机会模板与当前热点策略生成'
       });
     }
     ok(res, { mode: 'rule', candidates });
@@ -2032,7 +2131,7 @@ router.get('/export', (req, res) => {
       XLSX.utils.book_append_sheet(wb, ws, table.slice(0, 31));
     }
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    const date = new Date().toISOString().slice(0, 10);
+    const date = dateOnly(new Date());
     res.setHeader('Content-Disposition', `attachment; filename="koc-workbench-${date}.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buf);
@@ -2066,7 +2165,7 @@ router.get('/settings', (req, res) => {
     const rows = getDb().prepare('SELECT * FROM settings').all();
     const obj = {};
     rows.forEach(r => {
-      const isSecret = ['gemini_api_key', 'ai_api_key'].includes(r.key);
+      const isSecret = ['gemini_api_key', 'ai_api_key', 'douyin_client_secret'].includes(r.key);
       obj[r.key] = isSecret && r.value ? r.value.slice(0, 8) + '****' + r.value.slice(-4) : r.value;
     });
     ok(res, obj);
@@ -2076,13 +2175,33 @@ router.post('/settings', (req, res) => {
   try {
     const db = getDb();
     for (const [k, v] of Object.entries(req.body || {})) {
-      if (['gemini_api_key', 'ai_api_key'].includes(k) && String(v).includes('****')) continue; // 掩码回传不覆盖
+      if (['gemini_api_key', 'ai_api_key', 'douyin_client_secret'].includes(k) && String(v).includes('****')) continue; // 掩码回传不覆盖
       if (['gemini_api_key', 'ai_api_key'].includes(k) && /^https?:\/\//i.test(String(v).trim())) {
         return fail(res, 'API Key 不能填写网址，请把中转站地址填到 Base URL，把密钥填到 API Key。', 400);
       }
       db.prepare('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)').run(k, String(v));
     }
     ok(res, { saved: true });
+  } catch (e) { fail(res, e.message); }
+});
+
+router.post('/settings/test-douyin', async (req, res) => {
+  try {
+    const db = getDb();
+    const read = key => {
+      const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+      return row ? String(row.value || '').trim() : '';
+    };
+    const camp = db.prepare("SELECT * FROM campaigns WHERE is_current=1 OR status='执行中' ORDER BY is_current DESC, id DESC LIMIT 1").get();
+    const gameName = String(camp && camp.game_name || '杖剑传说').replace(/[《》]/g, '');
+    const result = await hotspotSource.fetchDouyin(8, {
+      clientKey: read('douyin_client_key') || process.env.DOUYIN_CLIENT_KEY || '',
+      clientSecret: read('douyin_client_secret') || process.env.DOUYIN_CLIENT_SECRET || '',
+      deviceId: read('douyin_device_id') || process.env.DOUYIN_DEVICE_ID || '',
+      keywords: ['全网热梗', '热门挑战', '反转整活', gameName]
+    });
+    if (result.status !== 'ok') return fail(res, result.error || '未搜索到抖音热点视频', 400);
+    ok(res, { count: result.list.length, sample: result.list[0] || null });
   } catch (e) { fail(res, e.message); }
 });
 

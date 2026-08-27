@@ -1,10 +1,11 @@
-export const OPP_FLOW = ['待判断', '已采纳', '待匹配创作者', '创作中', '待发布', '已发布', '已验证']
-export const OPP_CURRENT = ['待判断', '已采纳', '待匹配创作者', '创作中', '待发布', '已发布']
-export const OPP_HISTORY = ['已验证', '不采用', '已过期']
-export const OPP_ALL = [...OPP_FLOW, ...OPP_HISTORY]
-export const OPP_TERMINAL = ['不采用', '已过期']
+export const OPP_FLOW = ['待研判', '值得跟进', '方案整理中', '已输出']
+export const OPP_CURRENT = ['待研判', '值得跟进', '方案整理中']
+export const OPP_HISTORY = ['已输出', '不采用', '已过期', '已归档']
+export const OPP_ALL = [...new Set([...OPP_FLOW, ...OPP_HISTORY])]
+export const OPP_TERMINAL = ['已输出', '不采用', '已过期', '已归档']
 
 export const STATUS_MAP = {
+  '待研判': 'orange', '值得跟进': 'blue', '方案整理中': 'purple', '已输出': 'green',
   '待判断': 'orange', '已采纳': 'blue', '待匹配创作者': 'purple',
   '创作中': 'blue', '待发布': 'orange', '已发布': 'teal',
   '已验证': 'green', '不采用': 'gray', '已过期': 'gray',

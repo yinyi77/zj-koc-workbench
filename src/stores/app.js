@@ -1,9 +1,12 @@
 import { reactive } from 'vue'
 
+const AVAILABLE_PAGES = ['today', 'opportunities', 'campaigns', 'guide']
+const storedPage = localStorage.getItem('zj_page') || 'today'
+
 // 全局应用状态
 export const appState = reactive({
   user: localStorage.getItem('zj_user') || '',
-  currentPage: localStorage.getItem('zj_page') || 'today',
+  currentPage: AVAILABLE_PAGES.includes(storedPage) ? storedPage : 'today',
   apiOnline: null,
   apiMessage: '',
   activeCampId: null,
@@ -36,6 +39,7 @@ export function getUser() {
 }
 
 export function goPage(page) {
-  localStorage.setItem('zj_page', page)
-  appState.currentPage = page
+  const target = AVAILABLE_PAGES.includes(page) ? page : 'today'
+  localStorage.setItem('zj_page', target)
+  appState.currentPage = target
 }
