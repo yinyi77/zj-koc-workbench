@@ -2,8 +2,8 @@
   <div>
     <div class="page-head">
       <div>
-        <h2>机会委托板</h2>
-        <div class="sub">线索判断 → 内容方向 → 创作者匹配 → 执行验证 → 模板沉淀</div>
+        <h2>机会中心</h2>
+        <div class="sub">热点研判 → 值得跟进 → 方案整理 → 输出归档</div>
       </div>
       <div class="head-actions">
         <n-button secondary :loading="loading" @click="loadData">{{ loading ? '刷新中...' : '刷新' }}</n-button>
@@ -16,13 +16,17 @@
       <span>{{ error }}</span>
       <n-button size="small" secondary @click="loadData">重试</n-button>
     </div>
+    <div v-if="!loading && dataHealthItems.length" class="data-health-banner">
+      <b>数据待完善</b>
+      <span v-for="item in dataHealthItems" :key="item">{{ item }}</span>
+    </div>
 
     <!-- 子导航 -->
     <n-tabs v-model:value="tab" type="segment" animated class="page-tabs">
       <n-tab-pane name="current" :tab="`当前机会 ${counts.current}`" />
       <n-tab-pane name="history" :tab="`历史机会 ${counts.history}`" />
       <n-tab-pane name="generate" tab="机会生成" />
-      <n-tab-pane name="templates" tab="创意模板库" />
+      <n-tab-pane name="templates" tab="机会模板库" />
     </n-tabs>
 
     <!-- 筛选条（current/history tab）-->
@@ -45,7 +49,7 @@
         <div v-if="col.items.length" class="kanban-list">
           <div v-for="o in col.items" :key="o.id" class="opp-card" role="button" tabindex="0" @click="openDrawer(o.id)" @keyup.enter="openDrawer(o.id)">
             <span class="opp-title">{{ o.title }}</span>
-            <span class="opp-meta">{{ o.campaign_name || '未关联任务' }}</span>
+            <span class="opp-meta">{{ o.campaign_name || '未关联策略' }}</span>
             <span class="opp-tags">
               <StatusTag :text="o.platform || '平台待定'" />
               <span v-if="o.deadline" class="tag orange">截止 {{ o.deadline }}</span>
@@ -69,21 +73,26 @@
     <div class="card" v-if="tab === 'generate'">
       <div class="sec-title">从候选热点生成机会</div>
       <div class="hint">选择今日候选热点，系统会创建机会并自动生成完整方案。</div>
+      <div v-if="dailyMeta.fetchedAt" class="hotspot-freshness opportunity-source-meta">
+        <span>每日快照 {{ formatDateTime(dailyMeta.fetchedAt) }}</span>
+        <span>B站 {{ dailyMeta.biliCount }} 条</span>
+        <span>抖音 {{ dailyMeta.douyinCount }} 条</span>
+      </div>
       <div v-if="candHotspots.length" class="tmpl-list">
-        <div v-for="h in candHotspots" :key="h.id" class="tmpl-card">
+        <div v-for="h in candHotspots" :key="h.list_key || h.id" class="tmpl-card">
           <div class="t">{{ h.title }}</div>
           <div class="meta">
-            <StatusTag :text="h.platform" />
+            <StatusTag :text="h.platform || '平台待定'" />
             <StatusTag :text="h.trend || '—'" />
             <span class="tag gray">热度 {{ h.heat || '—' }}</span>
           </div>
-          <div class="acts"><n-button size="small" type="primary" @click="toOpportunity(h.id)">生成机会</n-button></div>
+          <div class="acts"><n-button size="small" type="primary" @click="toOpportunity(h)">生成机会</n-button></div>
         </div>
       </div>
       <EmptyState v-else>当前没有可生成的候选热点</EmptyState>
 
-      <div class="sec-title" style="margin-top:16px">根据当前营销任务主动生成机会</div>
-      <div class="hint">系统综合创意模板库 + 当前任务目标 + 历史案例 + 创作者能力生成候选机会。</div>
+      <div class="sec-title" style="margin-top:16px">根据当前热点策略主动生成机会</div>
+      <div class="hint">系统综合机会模板、当前关注目标和候选热点，生成可研判的机会方向。</div>
       <n-button type="primary" :loading="genLoading" @click="generateCandidates">
         {{ genLoading ? '生成中…' : '🤖 生成候选机会' }}
       </n-button>
@@ -97,13 +106,13 @@
           </div>
           <div class="line"><b>玩法：</b>{{ c.play_method }}</div>
           <div class="line"><b>方向：</b>{{ c.direction }}</div>
-          <div class="line"><b>依据：</b>{{ (c.basis?.version_fit || '') }} | {{ (c.basis?.cases || '') }}</div>
+          <div class="line"><b>依据：</b>{{ c.basis?.version_fit || c.basis?.reason || '—' }}</div>
           <div class="acts"><n-button size="small" type="primary" @click="adoptCandidate(i)">采纳为机会</n-button></div>
         </div>
       </div>
     </div>
 
-    <!-- 创意模板 tab -->
+    <!-- 机会模板 tab -->
     <div v-if="tab === 'templates'">
       <div class="page-head" style="border-bottom:none;margin-bottom:0;padding-bottom:0">
         <div></div>
@@ -115,18 +124,17 @@
             <div class="t">{{ t.name }} <span class="tag gray">使用 {{ t.usage_count || 0 }} 次</span></div>
             <div class="meta">
               <StatusTag :text="t.applicable_hotspot || '—'" />
-              <StatusTag :text="t.creator_type || '—'" />
+              <StatusTag :text="t.applicable_node || '通用节点'" />
             </div>
             <div class="line"><b>核心逻辑：</b>{{ t.core_logic || '—' }}</div>
-            <div class="line"><b>历史案例：</b>{{ t.cases || '—' }}</div>
-            <div class="line"><b>验证结果：</b>{{ t.validation || '—' }}</div>
+            <div class="line"><b>适用场景：</b>{{ t.validation || '—' }}</div>
             <div class="acts">
               <n-button size="small" secondary @click="openTemplateForm(t)">编辑</n-button>
               <n-button size="small" type="error" secondary @click="deleteTemplate(t.id)">删除</n-button>
             </div>
           </div>
         </div>
-        <EmptyState v-else>还没有创意模板。可在机会详情中点「沉淀为创意模板」。</EmptyState>
+        <EmptyState v-else>还没有机会模板，可先新建一条常用研判框架。</EmptyState>
       </div>
     </div>
 
@@ -144,9 +152,8 @@
             </div>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
-            <n-button size="small" secondary @click="depositCase">💾 沉淀为案例</n-button>
             <n-button size="small" type="error" secondary @click="deleteCurrentOpp">删除机会</n-button>
-            <span class="x" @click="closeDrawer">&times;</span>
+            <button type="button" class="x" aria-label="关闭机会详情" @click="closeDrawer">&times;</button>
           </div>
         </div>
         <div class="drawer-body">
@@ -160,8 +167,8 @@
             </template>
           </div>
 
-          <!-- ① 机会判断 -->
-          <div class="sec-title">① 机会判断
+          <!-- ① 机会研判 -->
+          <div class="sec-title">① 机会研判
             <span><n-button size="small" type="primary" :loading="evalLoading" @click="evalOpp">{{ evalLoading ? '分析并更新中…' : 'AI 评估并更新' }}</n-button></span>
           </div>
           <div v-if="drawer?.ai_analysis" class="ai-block">
@@ -170,18 +177,36 @@
           <div v-if="drawer?.rule_score != null" class="rule-block"><b>规则评分 {{ drawer.rule_score }} 分</b></div>
           <div v-if="!drawer?.ai_analysis && drawer?.rule_score == null" class="hint">尚未评估</div>
           <div style="display:flex;gap:8px;margin-top:10px">
-            <n-button v-if="drawer?.status === '待判断'" size="small" type="success" secondary @click="setStatus('已采纳')">✓ 值得做（已采纳）</n-button>
-            <n-button v-if="drawer?.status === '待判断'" size="small" type="error" secondary @click="setStatus('不采用')">✕ 不采用</n-button>
+            <n-button v-if="drawer?.status === '待研判'" size="small" type="success" secondary @click="setStatus('值得跟进')">✓ 值得跟进</n-button>
+            <n-button v-if="drawer?.status === '待研判'" size="small" type="error" secondary @click="setStatus('不采用')">✕ 不采用</n-button>
           </div>
 
-          <div class="sec-title">② 执行记录</div>
-          <n-data-table v-if="executions.length" class="data-table-card inner" style="margin-bottom:14px" :columns="executionColumns" :data="executions" :bordered="false" :single-line="false" :pagination="false" />
-          <div class="sync-hint">
-            <b>执行数据后续由导入自动生成</b>
-            <span>跑量数据导入后，系统会按平台、标题、创作者和发布时间自动关联到机会，这里只保留归档后的执行结果。</span>
+          <div class="sec-title">② 机会方案
+            <span class="plan-actions">
+              <n-button v-if="hasPlan" size="small" secondary @click="copyPlan">复制方案</n-button>
+              <n-button v-if="hasPlan" size="small" secondary @click="downloadPlan">下载 Brief</n-button>
+              <n-button size="small" secondary @click="generateOpportunityPlan()">生成/刷新方案</n-button>
+            </span>
+          </div>
+          <div v-if="planConflict" class="decision-conflict">当前评分低于 45 分，以下内容仅作为探索稿，不代表建议执行。请先确认关联性再推进。</div>
+          <div v-if="drawer?.direction || drawer?.play_method || drawer?.game_combo" class="opportunity-plan-grid">
+            <div><label>来源热点</label><p>{{ drawer.hotspot_title || '手动创建' }}</p></div>
+            <div><label>建议平台 / 时间</label><p>{{ drawer.platform || '待定' }} · {{ drawer.suggested_time || drawer.deadline || '待定' }}</p></div>
+            <div class="full"><label>机会方向</label><p>{{ drawer.direction || '—' }}</p></div>
+            <div><label>推荐玩法</label><p>{{ drawer.play_method || '—' }}</p></div>
+            <div><label>游戏结合方式</label><p>{{ drawer.game_combo || '—' }}</p></div>
+            <div class="full"><label>风险提示</label><p>{{ drawer.risk_note || '未发现明显风险' }}</p></div>
+          </div>
+          <div v-else class="hint">尚未生成方案。系统会根据当前项目适配、热梗可复用性、趋势、新鲜度和风险整理建议。</div>
+          <div v-if="planVersions.length" class="plan-version-list">
+            <div class="plan-version-title">方案版本记录</div>
+            <div v-for="version in planVersions.slice(0, 5)" :key="version.id" class="plan-version-item">
+              <span><b>V{{ version.version_no }}</b> · {{ version.mode === 'ai' ? 'AI 生成' : '规则生成' }} · {{ (version.created_at || '').slice(5, 16) }}</span>
+              <n-button size="tiny" text @click="copyPlanVersion(version)">复制该版</n-button>
+            </div>
           </div>
 
-          <div class="sec-title">③ 状态与截止</div>
+          <div class="sec-title">③ 状态与时效</div>
           <div class="form-grid">
             <div class="form-row">
               <label>状态</label>
@@ -190,6 +215,10 @@
             <div class="form-row">
               <label>截止日期</label>
               <n-date-picker v-model:value="drawerDeadlineValue" type="date" clearable @update:value="updateDeadline" />
+            </div>
+            <div class="form-row full">
+              <label>跟进人</label>
+              <n-input v-model:value="drawer.assignee" placeholder="填写负责人" @change="saveState" />
             </div>
           </div>
 
@@ -208,17 +237,15 @@
       </div>
     </template>
 
-    <!-- 新建/编辑创意模板弹窗 -->
+    <!-- 新建/编辑机会模板弹窗 -->
     <Modal :show="showTemplateForm" @close="showTemplateForm = false" wide>
-      <template #head><h3>{{ templateEditing ? '编辑' : '新建' }}创意模板</h3></template>
+      <template #head><h3>{{ templateEditing ? '编辑' : '新建' }}机会模板</h3></template>
       <div class="form-grid">
         <div class="form-row full"><label>模板名称 *</label><n-input v-model:value="templateForm.name" /></div>
         <div class="form-row full"><label>核心逻辑</label><n-input v-model:value="templateForm.core_logic" type="textarea" /></div>
         <div class="form-row"><label>适用热点</label><n-input v-model:value="templateForm.applicable_hotspot" /></div>
-        <div class="form-row"><label>适用营销节点</label><n-input v-model:value="templateForm.applicable_node" /></div>
-        <div class="form-row"><label>适合创作者类型</label><n-input v-model:value="templateForm.creator_type" /></div>
-        <div class="form-row full"><label>历史案例</label><n-input v-model:value="templateForm.cases" /></div>
-        <div class="form-row full"><label>验证结果</label><n-input v-model:value="templateForm.validation" /></div>
+        <div class="form-row"><label>适用策略节点</label><n-input v-model:value="templateForm.applicable_node" /></div>
+        <div class="form-row full"><label>适用场景</label><n-input v-model:value="templateForm.validation" /></div>
         <div class="form-row full"><label>风险与限制</label><n-input v-model:value="templateForm.risks" /></div>
       </div>
       <template #foot><n-button type="primary" @click="saveTemplate">保存</n-button></template>
@@ -228,7 +255,7 @@
     <Modal :show="showOppForm" @close="showOppForm = false">
       <template #head><h3>手动创建机会</h3></template>
       <div class="form-row"><label>机会标题 *</label><n-input v-model:value="oppFormTitle" /></div>
-      <div class="form-row"><label>关联营销任务</label>
+      <div class="form-row"><label>关联热点策略</label>
         <n-select v-model:value="oppFormCampId" :options="campaignOptions" placeholder="不关联" clearable />
       </div>
       <template #foot><n-button type="primary" @click="createOpp">创建</n-button></template>
@@ -249,10 +276,11 @@ import EmptyState from '../components/EmptyState.vue'
 const tab = ref('current')
 const filters = ref({ status: '全部', platform: '', risk: '', due: '', q: '' })
 const opportunities = ref([])
-const creatives = ref([]) // legacy alias for creators
 const templates = ref([])
 const campaigns = ref([])
 const genCands = ref([])
+const hotspotCandidates = ref([])
+const dailyMeta = ref({ fetchedAt: '', analyzedAt: '', biliCount: 0, douyinCount: 0 })
 const genLoading = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -261,7 +289,7 @@ const error = ref('')
 const drawerVisible = ref(false)
 const drawer = ref(null)
 const logs = ref([])
-const executions = ref([])
+const planVersions = ref([])
 const drawerDeadlineValue = ref(null)
 
 // Template form
@@ -281,6 +309,19 @@ const counts = computed(() => ({
   current: opportunities.value.filter(o => OPP_CURRENT.includes(o.status)).length,
   history: opportunities.value.filter(o => OPP_HISTORY.includes(o.status)).length
 }))
+
+const dataHealthItems = computed(() => {
+  const items = []
+  const missingPlatform = opportunities.value.filter(o => !o.platform).length
+  const missingDirection = opportunities.value.filter(o => !o.direction && !o.play_method).length
+  const legacy = opportunities.value.filter(o => o._legacyStatus || o._legacyPlatform).length
+  const duplicates = opportunities.value.length - new Set(opportunities.value.map(o => String(o.title || '').trim().toLowerCase())).size
+  if (missingPlatform) items.push(`${missingPlatform} 条缺少平台`)
+  if (missingDirection) items.push(`${missingDirection} 条缺少方案方向`)
+  if (legacy) items.push(`${legacy} 条历史字段已自动兼容，建议补全`)
+  if (duplicates) items.push(`${duplicates} 条标题可能重复`)
+  return items
+})
 
 const statusOptions = computed(() => tab.value === 'current' ? OPP_CURRENT : OPP_HISTORY)
 const statusFilterOptions = computed(() => [
@@ -336,7 +377,7 @@ const historyColumns = computed(() => [
     minWidth: 160,
     render: row => h('span', { class: 'muted-cell' }, `${row.hotspot_title || '—'}${row.node ? ' / ' + row.node : ''}`)
   },
-  { title: '关联任务', key: 'campaign_name', minWidth: 140, render: row => row.campaign_name || '—' },
+  { title: '关联策略', key: 'campaign_name', minWidth: 140, render: row => row.campaign_name || '—' },
   { title: '平台', key: 'platform', width: 90, render: row => row.platform || '—' },
   {
     title: '评分',
@@ -358,15 +399,6 @@ const historyColumns = computed(() => [
     render: row => h(NButton, { size: 'small', type: 'error', secondary: true, onClick: () => deleteOpp(row.id) }, () => '删除')
   }
 ])
-const executionColumns = [
-  { title: '创作者', key: 'creator_name', render: row => row.creator_name || '—' },
-  { title: '阶段', key: 'stage', render: row => h(StatusTag, { text: row.stage }) },
-  { title: '计划/发布日', key: 'date', render: row => row.publish_date || row.planned_date || '—' },
-  { title: '播放', key: 'play_count', render: row => row.play_count || '—' },
-  { title: 'ROI7', key: 'roi_d7', render: row => row.roi_d7 ?? '—' },
-  { title: '链接', key: 'publish_url', render: row => row.publish_url ? h(NButton, { size: 'small', secondary: true, onClick: () => openLink(row.publish_url) }, () => '打开') : '—' }
-]
-
 const kanbanColumns = computed(() => {
   return OPP_CURRENT.map(status => ({
     status,
@@ -374,18 +406,60 @@ const kanbanColumns = computed(() => {
   }))
 })
 
-const candHotspots = computed(() => {
-  return hotspotCandidates.value.filter(h => h.status === '候选' && h.screen_result !== '不符合')
-})
-const hotspotCandidates = ref([])
+const candHotspots = computed(() => hotspotCandidates.value.filter(h =>
+  (h.status || '候选') === '候选' && h.screen_result !== '不符合'
+))
 
 const isTerminal = computed(() => drawer.value && OPP_TERMINAL.includes(drawer.value.status))
 const flowIdx = computed(() => drawer.value ? OPP_FLOW.indexOf(drawer.value.status) : 0)
+const hasPlan = computed(() => !!(drawer.value && (drawer.value.direction || drawer.value.play_method || drawer.value.game_combo)))
+const planConflict = computed(() => {
+  if (!hasPlan.value) return false
+  const score = drawer.value?.ai_score ?? drawer.value?.rule_score
+  return score != null && Number(score) < 45
+})
 
 function riskLevel(c) {
   if (c.risk_json?.opinion?.level) return c.risk_json.opinion.level
   if (c.risk_level) return c.risk_level
   return '中'
+}
+
+const LEGACY_STATUS_MAP = {
+  '待判断': '待研判',
+  '已采纳': '值得跟进',
+  '待匹配创作者': '值得跟进',
+  '创作中': '方案整理中',
+  '待发布': '方案整理中',
+  '已发布': '已输出',
+  '已验证': '已输出'
+}
+
+function normalizeOpportunity(row) {
+  const status = LEGACY_STATUS_MAP[row.status] || row.status
+  const platform = normalizePlatform(row.platform || row.hotspot_source)
+  return {
+    ...row,
+    status: OPP_ALL.includes(status) ? status : '待研判',
+    platform,
+    _legacyStatus: !OPP_ALL.includes(row.status) && !LEGACY_STATUS_MAP[row.status],
+    _legacyPlatform: !!row.platform && platform !== row.platform
+  }
+}
+
+function normalizePlatform(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (/^(b站|bilibili|b\?)$/i.test(text)) return 'B站'
+  if (/^(抖音|douyin|dy)$/i.test(text)) return '抖音'
+  return text
+}
+
+function formatDateTime(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16)
+  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
 function dateStringToValue(value) {
@@ -418,13 +492,42 @@ async function loadData() {
   loading.value = true
   error.value = ''
   try {
-  opportunities.value = await apiGet('/opportunities')
-  try { templates.value = await apiGet('/creative_templates') } catch (e) { /* ignore */ }
-  try { campaigns.value = await apiGet('/campaigns') } catch (e) { /* ignore */ }
-  try {
-    const hs = await apiGet('/hotspots')
-    hotspotCandidates.value = hs
-  } catch (e) { /* ignore */ }
+    opportunities.value = (await apiGet('/opportunities')).map(normalizeOpportunity)
+    try { templates.value = await apiGet('/creative_templates') } catch (e) { /* ignore */ }
+    try { campaigns.value = await apiGet('/campaigns') } catch (e) { /* ignore */ }
+    try {
+      const [stored, daily] = await Promise.all([
+        apiGet('/hotspots'),
+        apiGet('/today/hotspots?limit=100')
+      ])
+      dailyMeta.value = {
+        fetchedAt: daily.fetchedAt || '',
+        analyzedAt: daily.analyzedAt || '',
+        biliCount: Number(daily.biliCount) || 0,
+        douyinCount: Number(daily.douyinCount) || 0
+      }
+      const byUrl = new Map(stored.filter(item => item.url).map(item => [item.url, item]))
+      const byTitle = new Map(stored.map(item => [`${item.title}::${normalizePlatform(item.platform)}`, item]))
+      const dailyRows = (daily.list || []).map((item, index) => {
+        const platform = normalizePlatform(item.platform || item.source || item.source_label)
+        const saved = byUrl.get(item.url) || byTitle.get(`${item.title}::${platform}`)
+        return {
+          ...item,
+          platform,
+          stored_id: saved?.id || null,
+          status: saved?.status || '候选',
+          screen_result: saved?.screen_result || '待定',
+          list_key: `daily-${item.id || index}`
+        }
+      })
+      const dailyKeys = new Set(dailyRows.map(item => item.url || `${item.title}::${item.platform}`))
+      const storedOnly = stored
+        .filter(item => !dailyKeys.has(item.url || `${item.title}::${normalizePlatform(item.platform)}`))
+        .map(item => ({ ...item, platform: normalizePlatform(item.platform), stored_id: item.id, list_key: `stored-${item.id}` }))
+      hotspotCandidates.value = [...dailyRows, ...storedOnly]
+    } catch (e) {
+      hotspotCandidates.value = []
+    }
   } catch (e) {
     error.value = e.message
     showToast(e.message, true)
@@ -435,21 +538,22 @@ async function loadData() {
 
 async function openDrawer(id) {
   try {
-    const [o, l, ex] = await Promise.all([
+    const [o, l, versions] = await Promise.all([
       apiGet(`/opportunities/${id}`),
       apiGet(`/opportunities/${id}/logs`),
-      apiGet(`/opportunities/${id}/executions`)
+      apiGet(`/opportunities/${id}/plan-versions`)
     ])
-    drawer.value = { ...o }
+    drawer.value = normalizeOpportunity(o)
     syncDrawerDateValue()
     logs.value = l || []
-    executions.value = ex || []
+    planVersions.value = versions || []
     drawerVisible.value = true
   } catch (e) { showToast(e.message, true) }
 }
 
 function closeDrawer() {
   drawerVisible.value = false
+  planVersions.value = []
   loadData()
 }
 
@@ -462,7 +566,7 @@ async function deleteOpp(id) {
       drawerVisible.value = false
       drawer.value = null
       logs.value = []
-      executions.value = []
+      planVersions.value = []
     }
     await loadData()
   } catch (e) { showToast(e.message, true) }
@@ -479,9 +583,16 @@ async function evalOpp() {
   const id = drawer.value.id
   try {
     const evalResult = await apiPost(`/opportunities/${id}/evaluate`, { user: getUser() }, { timeout: 180000 })
-    const planResult = await generateOpportunityPlan({ silent: true, refresh: false })
+    const score = Number(evalResult.ai?.score ?? evalResult.rule?.score)
+    let planResult = null
+    if (!Number.isFinite(score) || score >= 45) {
+      planResult = await generateOpportunityPlan({ silent: true, refresh: false })
+    }
     const usedRule = evalResult.mode === 'rule' || planResult?.mode === 'rule'
-    showToast(planResult?.message || evalResult.message || 'AI 评估已完成，机会字段已更新', usedRule)
+    const message = Number.isFinite(score) && score < 45
+      ? `评估完成（${score}分），低于 45 分，未自动生成正式方案`
+      : (planResult?.message || evalResult.message || '评估与方案已更新')
+    showToast(message, usedRule || (Number.isFinite(score) && score < 45))
     await openDrawer(id)
     await loadData()
   } catch (e) { showToast(e.message, true) }
@@ -507,7 +618,7 @@ async function generateOpportunityPlan({ silent = false, refresh = true } = {}) 
 
 async function setStatus(status) {
   if (!drawer.value) return
-  const reason = prompt(status === '已采纳' ? '判断结论（为什么值得做）：' : '不采用原因：') || ''
+  const reason = prompt(status === '值得跟进' ? '判断结论（为什么值得跟进）：' : '状态说明：') || ''
   await apiPut(`/opportunities/${drawer.value.id}`, { status, decision: reason, decision_by: getUser() })
   await apiPost(`/opportunities/${drawer.value.id}/logs`, { action: '状态变更', note: `${status}：${reason}`, user: getUser() })
   showToast('已更新')
@@ -517,7 +628,7 @@ async function setStatus(status) {
 async function saveState() {
   if (!drawer.value) return
   try {
-    await apiPut(`/opportunities/${drawer.value.id}`, { status: drawer.value.status, deadline: drawer.value.deadline })
+    await apiPut(`/opportunities/${drawer.value.id}`, { status: drawer.value.status, deadline: drawer.value.deadline, assignee: drawer.value.assignee || '' })
     showToast('已保存')
   } catch (e) { showToast(e.message, true) }
 }
@@ -532,23 +643,85 @@ async function addNote() {
   } catch (e) { showToast(e.message, true) }
 }
 
-async function depositCase() {
-  if (!drawer.value) return
+async function toOpportunity(h) {
   try {
-    await apiPost(`/opportunities/${drawer.value.id}/deposit-case`, { note: drawer.value.decision || '', user: getUser() })
-    showToast('已沉淀为案例')
-  } catch (e) { showToast(e.message, true) }
-}
-
-function openLink(url) { if (url) window.open(url, '_blank') }
-
-async function toOpportunity(hid) {
-  try {
+    let hid = typeof h === 'number' ? h : (h.stored_id || (typeof h.id === 'number' ? h.id : null))
+    if (!hid) {
+      const saved = await apiPost('/today/hotspots/materialize', {
+        id: h.id,
+        url: h.url,
+        title: h.title,
+        user: getUser()
+      })
+      hid = saved.hotspot.id
+    }
     const r = await apiPost(`/hotspots/${hid}/adopt`, { campaign_id: appState.activeCampId, user: getUser() })
-    showToast('已采纳为正式机会')
+    showToast('已生成并进入机会中心')
     openDrawer(r.id)
     tab.value = 'current'
   } catch (e) { showToast(e.message, true) }
+}
+
+function planTextFrom(value) {
+  const o = value || {}
+  return [
+    `# ${o.title || '机会方案'}`,
+    '',
+    `- 状态：${o.status || '—'}`,
+    `- 来源热点：${o.hotspot_title || '手动创建'}`,
+    `- 建议平台：${o.platform || '待定'}`,
+    `- 建议时间：${o.suggested_time || o.deadline || '待定'}`,
+    `- 跟进人：${o.assignee || '待定'}`,
+    '',
+    '## 机会方向',
+    o.direction || '—',
+    '',
+    '## 推荐玩法',
+    o.play_method || '—',
+    '',
+    '## 游戏结合方式',
+    o.game_combo || '—',
+    '',
+    '## 风险提示',
+    o.risk_note || '未发现明显风险'
+  ].join('\n')
+}
+
+function planText() {
+  return drawer.value ? planTextFrom({ ...drawer.value, title: drawer.value.title }) : ''
+}
+
+async function copyPlan() {
+  try {
+    await navigator.clipboard.writeText(planText())
+    showToast('方案已复制')
+  } catch (e) {
+    showToast('复制失败，请使用下载 Brief', true)
+  }
+}
+
+async function copyPlanVersion(version) {
+  try {
+    await navigator.clipboard.writeText(planTextFrom({ ...version.plan, title: drawer.value?.title, status: drawer.value?.status, hotspot_title: drawer.value?.hotspot_title, assignee: drawer.value?.assignee }))
+    showToast(`已复制 V${version.version_no} 方案`)
+  } catch (e) {
+    showToast('复制失败', true)
+  }
+}
+
+function downloadPlan() {
+  const content = planText()
+  if (!content) return
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${String(drawer.value?.title || '机会方案').replace(/[\\/:*?"<>|]/g, '_')}.md`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+  showToast('Brief 已下载')
 }
 
 async function generateCandidates() {
@@ -567,7 +740,7 @@ async function adoptCandidate(idx) {
     const r = await apiPost('/opportunities', {
       title: c.title,
       campaign_id: appState.activeCampId || null,
-      status: '待判断',
+      status: '待研判',
       direction: c.direction || '',
       play_method: c.play_method || '',
       game_combo: c.game_combo || '',
@@ -579,7 +752,7 @@ async function adoptCandidate(idx) {
       risk_level: riskLevel(c),
       created_by: getUser()
     })
-    showToast('已采纳为正式机会')
+    showToast('已生成并进入机会中心')
     tab.value = 'current'
     await loadData()
     openDrawer(r.id)
@@ -588,7 +761,7 @@ async function adoptCandidate(idx) {
 
 function openTemplateForm(t = null) {
   templateEditing.value = t
-  templateForm.value = t ? { ...t } : { name: '', core_logic: '', applicable_hotspot: '', applicable_node: '', creator_type: '', cases: '', validation: '', risks: '' }
+  templateForm.value = t ? { ...t } : { name: '', core_logic: '', applicable_hotspot: '', applicable_node: '', validation: '', risks: '' }
   showTemplateForm.value = true
 }
 
@@ -626,7 +799,7 @@ async function createOpp() {
   const title = oppFormTitle.value.trim()
   if (!title) return showToast('请输入标题', true)
   try {
-    const r = await apiPost('/opportunities', { title, campaign_id: oppFormCampId.value || null, status: '待判断', created_by: getUser() })
+    const r = await apiPost('/opportunities', { title, campaign_id: oppFormCampId.value || null, status: '待研判', created_by: getUser() })
     showOppForm.value = false
     showToast('已创建')
     openDrawer(r.id)

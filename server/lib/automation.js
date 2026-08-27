@@ -1,11 +1,10 @@
 /**
- * 后台自动任务：每日固定抓取一次热点/快讯，并在热点抓取后立即生成 AI 推荐分析。
+ * 后台自动任务：每日固定抓取一次通用热点，并在抓取后按当前项目生成 AI 推荐分析。
  *
  * 不额外引入 cron 依赖，使用 setTimeout 计算下一次 Asia/Shanghai 执行时间。
- * 业务结果继续写入现有 daily_hotspot_snapshot / game_news 表。
+ * 业务结果写入 daily_hotspot_snapshot 表。
  */
 const dailyHotspot = require('./dailyHotspot');
-const gameNews = require('./gameNews');
 const { saveNow } = require('../db/database');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -140,13 +139,12 @@ async function runNow(db = dbRef, { force = true, reason = 'manual' } = {}) {
       const recommendations = JSON.parse(hotspotSnap.recommendations_json || '[]');
       writeStatus(db, {
         running: true,
-        steps: ['热点抓取完成', 'AI 推荐分析完成', '开始抓取游戏快讯'],
+        steps: ['热点抓取完成', 'AI 推荐分析完成'],
         lastHotspotCount: hotspots.length,
         lastRecommendationCount: recommendations.length,
         lastSourceStatus: JSON.parse(hotspotSnap.source_status_json || '{}')
       });
 
-      const newsSnap = await gameNews.getSnapshot(db, { force });
       const finishedAt = new Date().toISOString();
       const result = {
         running: false,
@@ -157,10 +155,7 @@ async function runNow(db = dbRef, { force = true, reason = 'manual' } = {}) {
         lastRecommendationCount: recommendations.length,
         lastHotspotFetchedAt: hotspotSnap.fetched_at,
         lastHotspotAnalyzedAt: hotspotSnap.analyzed_at,
-        lastNewsAdded: newsSnap.added || 0,
-        lastNewsTotal: newsSnap.items ? newsSnap.items.length : 0,
-        lastNewsBatch: newsSnap.lastBatch || null,
-        steps: ['热点抓取完成', 'AI 推荐分析完成', '游戏快讯抓取完成']
+        steps: ['热点抓取完成', 'AI 推荐分析完成']
       };
       writeStatus(db, result);
       return getStatus(db);

@@ -36,9 +36,35 @@
     </div>
 
     <div class="settings-block divided">
+      <div class="settings-title">抖音热点视频搜索</div>
+      <div class="settings-hint">
+        用抖音开放平台的视频搜索能力，同时按通用热梗、网感趋势和当前项目关键词抓取可直达的具体视频。未配置时系统不会用平台总榜或搜索页假链接代替。
+      </div>
+
+      <div class="form-row">
+        <label>应用 AppID（Client Key）</label>
+        <n-input v-model:value="douyinClientKey" placeholder="抖音开放平台应用 AppID" clearable />
+      </div>
+      <div class="form-row">
+        <label>应用 AppSecret</label>
+        <n-input v-model:value="douyinClientSecret" type="password" placeholder="仅保存在服务端设置中" show-password-on="click" />
+      </div>
+      <div class="form-row">
+        <label>设备 ID（Device ID）</label>
+        <n-input v-model:value="douyinDeviceId" placeholder="纯数字设备 ID" clearable />
+        <div class="field-hint">应用需要开通 aweme.dy.video_search（抖音视频垂搜）权限。</div>
+      </div>
+
+      <n-space>
+        <n-button type="primary" :loading="douyinSaving" @click="saveDouyin">{{ douyinSaving ? '保存中...' : '保存抖音配置' }}</n-button>
+        <n-button secondary :loading="douyinTesting" @click="testDouyin">{{ douyinTesting ? '测试中...' : '测试视频搜索' }}</n-button>
+      </n-space>
+    </div>
+
+    <div class="settings-block divided">
       <div class="settings-title">后台自动任务</div>
       <div class="settings-hint">
-        每天固定抓取一次今日热点和游戏快讯；热点抓取完成后会立即生成 AI 推荐分析，并写入数据库快照。
+        每天固定抓取一次通用热梗与网感热点；抓取完成后，再结合当前项目生成 AI 推荐分析并写入数据库快照。
       </div>
 
       <div class="form-row">
@@ -56,7 +82,6 @@
         <div><span>下次执行</span><b>{{ autoStatus.nextRunLocal || '未计划' }}</b></div>
         <div><span>上次完成</span><b>{{ fmtTime(autoStatus.lastFinishedAt) }}</b></div>
         <div><span>热点/推荐</span><b>{{ autoStatus.lastHotspotCount ?? '—' }} / {{ autoStatus.lastRecommendationCount ?? '—' }}</b></div>
-        <div><span>游戏快讯</span><b>{{ autoStatus.lastNewsTotal ?? '—' }} 条</b></div>
         <div><span>最近结果</span><b :class="{ danger: autoStatus.lastSuccess === false }">{{ autoResultLabel }}</b></div>
       </div>
       <div v-if="autoStatus.lastError" class="field-hint danger">{{ autoStatus.lastError }}</div>
@@ -77,7 +102,7 @@
     </div>
 
     <div class="settings-footer">
-      杖剑传说 KOC 内容机会决策与复盘工作台 V3.0.0<br />Node.js + Express + sql.js + Vue 3 + Vite
+      通用热梗发现、项目适配与机会方案平台<br />Node.js + Express + sql.js + Vue 3 + Vite
     </div>
   </div>
 </template>
@@ -94,6 +119,11 @@ const model = ref('gpt-4o-mini')
 const insightModel = ref('gpt-5.4-mini')
 const testing = ref(false)
 const saving = ref(false)
+const douyinClientKey = ref('')
+const douyinClientSecret = ref('')
+const douyinDeviceId = ref('')
+const douyinSaving = ref(false)
+const douyinTesting = ref(false)
 const autoLoading = ref(false)
 const autoSaving = ref(false)
 const autoRunning = ref(false)
@@ -158,6 +188,9 @@ onMounted(async () => {
     baseUrl.value = s.ai_base_url || (provider.value === 'openai_compatible' ? 'https://api.openai.com/v1' : 'https://generativelanguage.googleapis.com/v1beta')
     model.value = s.ai_model || s.gemini_model || (provider.value === 'openai_compatible' ? 'gpt-4o-mini' : 'gemini-2.0-flash')
     insightModel.value = s.ai_insight_model || (provider.value === 'openai_compatible' ? 'gpt-5.4-mini' : model.value)
+    douyinClientKey.value = s.douyin_client_key || ''
+    douyinClientSecret.value = s.douyin_client_secret || ''
+    douyinDeviceId.value = s.douyin_device_id || ''
   } catch (e) {
     showToast(e.message, true)
   }
@@ -244,6 +277,42 @@ async function saveKey() {
     showToast(e.message, true)
   } finally {
     saving.value = false
+  }
+}
+
+async function saveDouyin() {
+  if (!douyinClientKey.value.trim() || !douyinClientSecret.value.trim() || !/^\d+$/.test(douyinDeviceId.value.trim())) {
+    showToast('请完整填写 AppID、AppSecret 和纯数字设备 ID', true)
+    return false
+  }
+  douyinSaving.value = true
+  try {
+    await apiPost('/settings', {
+      douyin_client_key: douyinClientKey.value.trim(),
+      douyin_client_secret: douyinClientSecret.value.trim(),
+      douyin_device_id: douyinDeviceId.value.trim()
+    })
+    showToast('抖音视频搜索配置已保存')
+    return true
+  } catch (e) {
+    showToast(e.message, true)
+    return false
+  } finally {
+    douyinSaving.value = false
+  }
+}
+
+async function testDouyin() {
+  if (douyinSaving.value) return
+  if (!await saveDouyin()) return
+  douyinTesting.value = true
+  try {
+    const result = await apiPost('/settings/test-douyin', {}, { timeout: 30000 })
+    showToast(`抖音热点搜索正常，已找到 ${result.count || 0} 条可直达视频`)
+  } catch (e) {
+    showToast(e.message, true)
+  } finally {
+    douyinTesting.value = false
   }
 }
 

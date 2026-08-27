@@ -1,7 +1,7 @@
 {
   "name": "zj-koc-workbench",
   "version": "3.0.0",
-  "description": "杖剑传说 KOC 内容机会决策与复盘工作台 V3",
+  "description": "通用热梗发现、项目适配与机会方案平台",
   "type": "module",
   "scripts": {
     "dev": "vite",

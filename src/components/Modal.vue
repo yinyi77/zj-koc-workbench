@@ -7,7 +7,7 @@
     @esc="$emit('close')"
   >
     <n-card
-      :class="['modal', 'naive-modal-card', { wide }]"
+      :class="['app-modal-card', 'naive-modal-card', { wide }]"
       :style="{ width: wide ? '820px' : '560px', maxWidth: 'calc(100vw - 32px)' }"
       :bordered="false"
       closable

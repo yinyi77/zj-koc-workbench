@@ -8,6 +8,7 @@
  * 设计目标：一天内无论前端刷新多少次、服务是否重启，今日工作页都只读同一份当日快照。
  */
 const hotspotSource = require('./hotspotSource');
+const gameNews = require('./gameNews');
 const ai = require('./ai');
 
 /** 热点池只保留三类：杖剑相关、手游共性热点、能被游戏内容直接借用的网络热梗。 */
@@ -108,6 +109,15 @@ function relevanceScore(title) {
   return hitWords(text, MEME_SIGNALS).length + MEME_FORMAT_RULES.filter(rule => rule.re.test(text)).length;
 }
 
+function classifyIndustry(title) {
+  const text = String(title || '').toLowerCase();
+  if (/mmo|mmorpg|大型多人|多人在线|公会|团战|逆水寒|天龙八部|梦幻西游|诛仙|剑网|龙之谷/.test(text)) return 'MMO';
+  if (/休闲|益智|消除|放置|模拟经营|小游戏|轻量|解压|合成|蛋仔派对|元梦之星|开心消消乐|羊了个羊|保卫萝卜|植物大战僵尸|pvz/.test(text)) return '休闲向';
+  if (/rpg|角色扮演|动作角色|回合制|回合|卡牌|养成|冒险|原神|崩坏|星穹铁道|绝区零|鸣潮|明日方舟|杖剑传说|阴阳师|恋与深空/.test(text)) return 'RPG';
+  if (/派对|音游|音乐|舞蹈|社交|搞笑|娱乐|互动|联动|演唱|综艺/.test(text)) return '娱乐向';
+  return '手游';
+}
+
 function filterRelevant(list, db = null, campaign = null) {
   const scored = [];
   const caseTexts = db ? db.prepare(`SELECT title,copy,summary,content_type,play_method,topic_tags,play_count,result
@@ -118,7 +128,9 @@ function filterRelevant(list, db = null, campaign = null) {
       play: Number(row.play_count) || 0
     })) : [];
   for (const h of (list || [])) {
-    const classification = classifyHotspot(h, campaign);
+    const classification = h.industryNews
+      ? { category: '行业动态', score: 30, matched: [h.source || '游戏资讯'], reason: `来自${h.source || '游戏资讯'}的行业资讯` }
+      : classifyHotspot(h, campaign);
     if (classification) {
       const words = [...new Set(classification.matched)];
       const matches = caseTexts.filter(item => words.some(word => word.length >= 2 && item.text.includes(word)));
@@ -127,11 +139,12 @@ function filterRelevant(list, db = null, campaign = null) {
       const caseScore = matches.reduce((sum, item) => sum + item.weight + Math.min(2, Math.log10(Math.max(1, item.play)) / 3), 0);
       const heatScore = Math.max(0, 8 - Math.log2(Math.max(1, Number(h.rank) || 100)));
       const totalScore = classification.score + Math.min(24, caseScore * 2) + heatScore;
-      scored.push({ h: { ...h, hotspotCategory: classification.category, matchReason: classification.reason, matchedSignals: classification.matched, relevanceScore: classification.score, similarCaseCount: caseHits, successfulCaseCount, candidateScore: Math.round(totalScore * 10) / 10 }, s: totalScore });
+      const channel = classification.category === '泛娱乐可借势' ? '今日焦点' : '行业动态';
+      scored.push({ h: { ...h, channel, hotspotCategory: classification.category, industryCategory: channel === '行业动态' ? classifyIndustry(h.title) : '', matchReason: classification.reason, matchedSignals: classification.matched, relevanceScore: classification.score, similarCaseCount: caseHits, successfulCaseCount, candidateScore: Math.round(totalScore * 10) / 10 }, s: totalScore });
     }
   }
   scored.sort((a, b) => b.s - a.s);
-  const caps = { '杖剑相关': 30, '手游热点': 30, '泛娱乐可借势': 40 };
+  const caps = { '杖剑相关': 30, '手游热点': 30, '泛娱乐可借势': 40, '行业动态': 40 };
   const counts = {};
   const capped = scored.filter(item => {
     const category = item.h.hotspotCategory;
@@ -140,7 +153,7 @@ function filterRelevant(list, db = null, campaign = null) {
   });
   const buckets = Object.fromEntries(Object.keys(caps).map(category => [category, capped.filter(item => item.h.hotspotCategory === category)]));
   const balanced = [];
-  const order = ['杖剑相关', '泛娱乐可借势', '手游热点', '泛娱乐可借势'];
+  const order = ['杖剑相关', '泛娱乐可借势', '手游热点', '泛娱乐可借势', '行业动态'];
   while (order.some(category => buckets[category]?.length)) {
     for (const category of order) {
       if (buckets[category]?.length) balanced.push(buckets[category].shift());
@@ -149,26 +162,82 @@ function filterRelevant(list, db = null, campaign = null) {
   return balanced.map(x => x.h);
 }
 
-function dateOnly(d) { return d.toISOString().slice(0, 10); }
+const APP_TIME_ZONE = process.env.APP_TIME_ZONE || 'Asia/Shanghai';
+const DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: APP_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+function dateOnly(d) { return DATE_FORMATTER.format(d); }
 
 function buildGameContext(camp) {
   if (!camp) return '《杖剑传说》是一款剑与魔法的奇幻题材手游，适合测评/攻略/剧情/二创/整活类 KOC 内容。';
   return `《${camp.game_name || '杖剑传说'}》是一款奇幻题材手游。当前任务：${camp.name}；版本/活动：${camp.version_event || '—'}；目标：${camp.goal || '—'}；重点内容：${camp.focus_content || '—'}；期望方向：${camp.content_directions || '—'}。游戏卖点：剑与魔法的奇幻冒险、职业/坐骑/副本/剧情、二创与整活空间大、适合测评/攻略/情怀向内容。`;
 }
 
+function getSetting(db, key) {
+  const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+  return row ? String(row.value || '').trim() : '';
+}
+
+function normalizeIndustryNews(items) {
+  const cutoff = Date.now() - 45 * 86400000;
+  return (items || []).filter(item => {
+    const raw = item.pub_date || item.batch_date;
+    const time = raw ? new Date(raw).getTime() : Date.now();
+    return !Number.isFinite(time) || time >= cutoff;
+  }).slice(0, 80).map((item, index) => ({
+    id: `industry-news-${item.id || index}`,
+    source: item.source || '游戏资讯',
+    sourceType: item.source === '伽马数据' ? '产业数据报告' : '游戏行业资讯',
+    title: item.title,
+    category: item.category || '游戏资讯',
+    url: item.url,
+    heat: 0,
+    rank: index + 1,
+    up: item.source || '',
+    description: item.summary || '',
+    publishedAt: item.pub_date ? `${item.pub_date}T08:00:00.000Z` : null,
+    gameVertical: true,
+    industryNews: true
+  }));
+}
+
+function buildDouyinKeywords(camp) {
+  const base = ['全网热梗', '热门挑战', '反转整活', '情绪共鸣', '热门BGM', '变装卡点', '休闲手游', '娱乐向手游', 'MMO手游', 'RPG手游'];
+  if (camp) {
+    base.unshift(camp.game_name || '');
+    for (const value of [camp.version_event, camp.focus_content, camp.content_directions]) {
+      base.push(...String(value || '').split(/[，,、；;|/\n]/));
+    }
+  }
+  return [...new Set(base.map(x => String(x || '').trim()).filter(x => x && x.length <= 24))].slice(0, 12);
+}
+
 async function generate(db, { force } = {}) {
   if (force) hotspotSource.invalidate(); // 强制时先清空热点源内存缓存，确保真正重抓
   const camp = db.prepare("SELECT * FROM campaigns WHERE status='执行中' ORDER BY (is_current=1) DESC, id DESC LIMIT 1").get();
-  const hs = await hotspotSource.getHotspots(150, { searchKeywords: buildSearchKeywords(camp) });
-  // 泛娱乐只收可参与的网络热梗/挑战/表达模板；娱乐行业资讯和具体其他游戏内容直接排除。
-  const list = filterRelevant(hs.list || [], db, camp);
-  const recos = await ai.recommendOpportunities({ hotspots: list, gameContext: buildGameContext(camp), topN: 20 });
+  const [hs, industryNews] = await Promise.all([
+    hotspotSource.getHotspots(150, {
+      searchKeywords: buildSearchKeywords(camp),
+      douyin: {
+        clientKey: getSetting(db, 'douyin_client_key') || process.env.DOUYIN_CLIENT_KEY || '',
+        clientSecret: getSetting(db, 'douyin_client_secret') || process.env.DOUYIN_CLIENT_SECRET || '',
+        deviceId: getSetting(db, 'douyin_device_id') || process.env.DOUYIN_DEVICE_ID || '',
+        keywords: buildDouyinKeywords(camp)
+      }
+    }),
+    gameNews.getSnapshot(db, { force: Boolean(force) })
+  ]);
+  const list = filterRelevant([...(hs.list || []), ...normalizeIndustryNews(industryNews.items)], db, camp);
+  const recos = await ai.recommendOpportunities({ hotspots: list, gameContext: buildGameContext(camp), campaign: camp, topN: 20 });
   const now = new Date().toISOString();
   const snap = {
     snap_date: dateOnly(new Date()),
     hotspots_json: JSON.stringify(list),
     recommendations_json: JSON.stringify(recos),
-    source_status_json: JSON.stringify(hs.sourceStatus || {}),
+    source_status_json: JSON.stringify({ ...(hs.sourceStatus || {}), industryNews: industryNews.status || {} }),
     fetched_at: hs.fetchedAt || now,
     analyzed_at: now
   };
@@ -180,33 +249,97 @@ async function generate(db, { force } = {}) {
   return snap;
 }
 
-async function ensure(db, { force } = {}) {
-  const today = dateOnly(new Date());
-  if (!force) {
-    const row = db.prepare('SELECT * FROM daily_hotspot_snapshot WHERE snap_date=?').get(today);
-    if (row) return row;
-  }
-  return await generate(db, { force });
+function getSnapshotByDate(db, snapDate) {
+  return db.prepare('SELECT * FROM daily_hotspot_snapshot WHERE snap_date=?').get(snapDate) || null;
 }
 
-// 在途锁：同一时刻只跑一个 generate，其余请求复用其结果，避免并发重复烧 API
+function getLatestSnapshot(db) {
+  return db.prepare('SELECT * FROM daily_hotspot_snapshot ORDER BY snap_date DESC LIMIT 1').get() || null;
+}
+
+function emptySnapshot(targetDate) {
+  return { snap_date: targetDate, hotspots_json: '[]', recommendations_json: '[]', source_status_json: '{}', fetched_at: null, analyzed_at: null };
+}
+
 let inFlight = null;
-function getSnapshot(db, { force } = {}) {
-  if (inFlight) {
-    return (async () => {
-      try { await inFlight; } catch (e) { /* 忽略，下面按需重抓 */ }
-      if (!force) {
-        const row = db.prepare('SELECT * FROM daily_hotspot_snapshot WHERE snap_date=?').get(dateOnly(new Date()));
-        if (row) return row;
-      }
-      return await generate(db, { force });
-    })();
-  }
+let refreshState = { status: 'idle', targetDate: null, startedAt: null, finishedAt: null, error: '' };
+
+function beginRefresh(db, { force = false } = {}) {
+  const today = dateOnly(new Date());
+  if (inFlight) return inFlight;
+  const current = getSnapshotByDate(db, today);
+  if (!force && current) return Promise.resolve(current);
+  refreshState = { status: 'running', targetDate: today, startedAt: new Date().toISOString(), finishedAt: null, error: '' };
   inFlight = (async () => {
-    try { return await ensure(db, { force }); }
-    finally { inFlight = null; }
+    try {
+      const snap = await generate(db, { force });
+      refreshState = { ...refreshState, status: 'completed', finishedAt: new Date().toISOString(), error: '' };
+      return snap;
+    } catch (e) {
+      refreshState = { ...refreshState, status: 'failed', finishedAt: new Date().toISOString(), error: e.message || '今日热点更新失败' };
+      throw e;
+    } finally {
+      inFlight = null;
+    }
   })();
   return inFlight;
 }
 
-module.exports = { getSnapshot, generate, ensure, dateOnly, filterRelevant, relevanceScore, mobileGameScore, classifyHotspot, buildSearchKeywords, campaignTerms };
+async function ensure(db, { force } = {}) {
+  const today = dateOnly(new Date());
+  if (!force) {
+    const row = getSnapshotByDate(db, today);
+    if (row) return row;
+  }
+  return await beginRefresh(db, { force: Boolean(force) });
+}
+
+function startBackgroundRefresh(db) {
+  const today = dateOnly(new Date());
+  if (getSnapshotByDate(db, today)) return false;
+  if (refreshState.targetDate === today && refreshState.status === 'failed') return false;
+  beginRefresh(db, { force: false }).catch(e => console.error('[dailyHotspot] 后台更新失败:', e.message));
+  return true;
+}
+
+function readSnapshot(db) {
+  const today = dateOnly(new Date());
+  const current = getSnapshotByDate(db, today);
+  if (!current) startBackgroundRefresh(db);
+  const cached = current || getLatestSnapshot(db);
+  const snapshot = cached || emptySnapshot(today);
+  return {
+    snapshot,
+    hasSnapshot: Boolean(cached),
+    updating: !current && (refreshState.status === 'running' || Boolean(inFlight)),
+    stale: Boolean(cached) && snapshot.snap_date !== today,
+    targetDate: today,
+    updateStatus: current ? 'completed' : refreshState.status,
+    updateError: current ? '' : refreshState.error,
+    updateStartedAt: refreshState.startedAt,
+    updateFinishedAt: refreshState.finishedAt
+  };
+}
+
+function getRefreshStatus(db) {
+  const state = readSnapshot(db);
+  return {
+    hasSnapshot: state.hasSnapshot,
+    updating: state.updating,
+    stale: state.stale,
+    displayedSnapDate: state.snapshot.snap_date,
+    targetSnapDate: state.targetDate,
+    status: state.updateStatus,
+    error: state.updateError,
+    startedAt: state.updateStartedAt,
+    finishedAt: state.updateFinishedAt
+  };
+}
+
+function getSnapshot(db, { force } = {}) { return ensure(db, { force }); }
+
+module.exports = {
+  getSnapshot, getLatestSnapshot, readSnapshot, getRefreshStatus, startBackgroundRefresh,
+  generate, ensure, dateOnly, filterRelevant, relevanceScore, mobileGameScore,
+  classifyHotspot, buildSearchKeywords, campaignTerms
+};

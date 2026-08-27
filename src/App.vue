@@ -2,84 +2,52 @@
   <n-config-provider :theme-overrides="naiveTheme">
     <n-message-provider>
       <div id="app-root">
-        <!-- 侧边导航 -->
-        <aside class="sidebar">
-      <div class="sb-brand">
-        <div class="sb-logo">
-          <img src="/logo.png" alt="杖剑传说" />
-        </div>
-        <div class="sb-brand-text">
-          <h1>杖剑传说</h1>
-          <p>坎斯汀内容作战台</p>
-        </div>
-      </div>
+        <header class="app-header">
+          <div class="app-header-inner">
+            <button type="button" class="header-brand" aria-label="返回热点雷达" @click="goPage('today')">
+              <span class="sb-logo"><img src="/logo.png" alt="热点机会台" /></span>
+              <span class="sb-brand-text">
+                <strong>热点机会台</strong>
+                <small>热梗发现与方案生成</small>
+              </span>
+            </button>
 
-      <nav class="sb-nav">
-        <div class="sb-nav-group">
-          <div class="sb-nav-label">日常冒险</div>
-          <div class="sb-nav-item" v-for="item in mainNav" :key="item.key"
-            :class="{ active: currentPage === item.key }"
-            @click="goPage(item.key)">
-            <n-icon class="nav-icon" :component="item.icon" />
-            <span>{{ item.label }}</span>
+            <nav class="header-nav" aria-label="主导航">
+              <button type="button" class="sb-nav-item" v-for="item in mainNav" :key="item.key"
+                :class="{ active: currentPage === item.key }"
+                @click="goPage(item.key)">
+                <n-icon class="nav-icon" :component="item.icon" />
+                <span>{{ item.label }}</span>
+              </button>
+            </nav>
+
+            <div class="header-actions">
+              <n-button
+                :class="['api-health', apiOnline === false ? 'offline' : apiOnline === true ? 'online' : 'checking']"
+                attr-type="button"
+                :title="apiMessage"
+                @click="checkApi"
+              >
+                <span class="health-dot"></span>{{ apiLabel }}
+              </n-button>
+              <n-button quaternary size="small" @click="goPage('guide')">使用指南</n-button>
+              <button type="button" class="user-chip" @click="askUsername(true)">
+                <span class="user-avatar">{{ user ? user[0] : '?' }}</span>
+                <span>{{ user || '未设置' }}</span>
+              </button>
+              <n-button quaternary size="small" class="settings-trigger" @click="showSettings = true">系统设置</n-button>
+            </div>
           </div>
-        </div>
+        </header>
 
-        <div class="sb-nav-group">
-          <div class="sb-nav-label">内容资产</div>
-          <div class="sb-nav-item" v-for="item in assetNav" :key="item.key"
-            :class="{ active: currentPage === item.key }"
-            @click="goPage(item.key)">
-            <n-icon class="nav-icon" :component="item.icon" />
-            <span>{{ item.label }}</span>
-          </div>
-        </div>
-      </nav>
-
-      <div class="sb-bottom">
-        <div class="user-chip" @click="askUsername(true)">
-          <div class="user-avatar">{{ user ? user[0] : '?' }}</div>
-          <span>{{ user || '未设置' }}</span>
-        </div>
-        <n-button secondary block size="small" style="justify-content:flex-start" @click="showSettings = true">
-          系统设置
-        </n-button>
-      </div>
-        </aside>
-
-        <!-- 主区域 -->
         <div class="main-area">
-      <!-- 顶栏 -->
-      <header class="topbar">
-        <div class="tb-left">
-          <div class="tb-breadcrumb">
-            <span>{{ pageTitle }}</span>
-          </div>
-        </div>
-        <div class="tb-actions">
-          <n-button
-            :class="['api-health', apiOnline === false ? 'offline' : apiOnline === true ? 'online' : 'checking']"
-            attr-type="button"
-            :title="apiMessage"
-            @click="checkApi"
-          >
-            <span class="health-dot"></span>{{ apiLabel }}
-          </n-button>
-          <n-button secondary size="small" @click="goPage('guide')">使用指南</n-button>
-        </div>
-      </header>
-
-      <!-- 内容区 -->
-      <main class="main-content">
-        <TodayPage      v-if="currentPage === 'today'" />
-        <CampaignsPage  v-else-if="currentPage === 'campaigns'" />
-        <OpportunitiesPage v-else-if="currentPage === 'opportunities'" />
-        <CasesPage      v-else-if="currentPage === 'cases'" />
-        <CreatorsPage   v-else-if="currentPage === 'creators'" />
-        <OpsPage        v-else-if="currentPage === 'ops'" />
-        <GameNewsPage   v-else-if="currentPage === 'gamenews'" />
-        <GuidePage      v-else-if="currentPage === 'guide'" />
-      </main>
+          <main class="main-content">
+            <TodayPage      v-if="currentPage === 'today'" />
+            <CampaignsPage  v-else-if="currentPage === 'campaigns'" />
+            <OpportunitiesPage v-else-if="currentPage === 'opportunities'" />
+            <GuidePage      v-else-if="currentPage === 'guide'" />
+            <TodayPage      v-else />
+          </main>
         </div>
 
         <!-- Toast -->
@@ -120,19 +88,11 @@ import SettingsPanel from './pages/SettingsPanel.vue'
 import TodayPage from './pages/TodayPage.vue'
 import CampaignsPage from './pages/CampaignsPage.vue'
 import OpportunitiesPage from './pages/OpportunitiesPage.vue'
-import CasesPage from './pages/CasesPage.vue'
-import CreatorsPage from './pages/CreatorsPage.vue'
-import OpsPage from './pages/OpsPage.vue'
-import GameNewsPage from './pages/GameNewsPage.vue'
 import GuidePage from './pages/GuidePage.vue'
 import {
-  AnalyticsOutline,
   CalendarClearOutline,
   CompassOutline,
-  FolderOpenOutline,
-  GameControllerOutline,
-  MegaphoneOutline,
-  PeopleOutline
+  MegaphoneOutline
 } from '@vicons/ionicons5'
 
 const currentPage = computed(() => appState.currentPage)
@@ -148,36 +108,20 @@ const apiLabel = computed(() => {
   return '检查中'
 })
 
-const pageTitles = {
-  today: '今日工作',
-  campaigns: '营销任务',
-  opportunities: '机会中心',
-  cases: '案例库',
-  creators: '创作者库',
-  ops: '内容运营分析',
-  gamenews: '游戏快讯',
-  guide: '使用指南'
-}
-const pageTitle = computed(() => pageTitles[currentPage.value] || '')
-
 const mainNav = [
-  { key: 'today', label: '今日工作', icon: CalendarClearOutline },
-  { key: 'campaigns', label: '营销任务', icon: MegaphoneOutline },
+  { key: 'today', label: '热点雷达', icon: CalendarClearOutline },
   { key: 'opportunities', label: '机会中心', icon: CompassOutline },
-  { key: 'gamenews', label: '游戏快讯', icon: GameControllerOutline },
-]
-const assetNav = [
-  { key: 'cases', label: '案例库', icon: FolderOpenOutline },
-  { key: 'creators', label: '创作者库', icon: PeopleOutline },
-  { key: 'ops', label: '内容运营分析', icon: AnalyticsOutline },
+  { key: 'campaigns', label: '策略配置', icon: MegaphoneOutline }
 ]
 
 const naiveTheme = {
   common: {
-    primaryColor: '#2f8fd7',
-    primaryColorHover: '#247ec4',
-    primaryColorPressed: '#1769a8',
-    primaryColorSuppl: '#8bcf73',
+    primaryColor: '#151515',
+    primaryColorHover: '#333333',
+    primaryColorPressed: '#000000',
+    primaryColorSuppl: '#151515',
+    textColorBase: '#171717',
+    borderColor: '#dedede',
     borderRadius: '8px',
     fontFamily: 'Inter, "Microsoft YaHei", system-ui, sans-serif'
   },

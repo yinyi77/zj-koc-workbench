@@ -62,8 +62,8 @@ function createSchema(db) {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     hotspot_id INTEGER,                -- 来源热点（可空：手动创建）
-    campaign_id INTEGER,               -- 关联营销任务
-    status TEXT DEFAULT '待判断',      -- 待判断/已采纳/待匹配创作者/创作中/待发布/已发布/已验证/不采用/已过期
+    campaign_id INTEGER,               -- 关联热点策略
+    status TEXT DEFAULT '待研判',      -- 待研判/值得跟进/方案整理中/已输出/不采用/已过期/已归档
     rule_score REAL,                   -- 规则打分 0-100
     rule_detail TEXT,                  -- 规则打分明细 JSON
     ai_score REAL,                     -- AI评估分
@@ -101,6 +101,17 @@ function createSchema(db) {
     note TEXT,
     user TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS opportunity_plan_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    opportunity_id INTEGER NOT NULL,
+    version_no INTEGER NOT NULL,
+    plan_json TEXT NOT NULL,
+    mode TEXT,
+    created_by TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(opportunity_id, version_no)
   );
 
   CREATE TABLE IF NOT EXISTS creators (
@@ -348,6 +359,17 @@ function migrate(db) {
     if (!info.some(r => r.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   };
 
+  db.exec(`CREATE TABLE IF NOT EXISTS opportunity_plan_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    opportunity_id INTEGER NOT NULL,
+    version_no INTEGER NOT NULL,
+    plan_json TEXT NOT NULL,
+    mode TEXT,
+    created_by TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(opportunity_id, version_no)
+  )`);
+
   // campaigns 新字段
   add('campaigns', 'version_event', 'TEXT');
   add('campaigns', 'focus_content', 'TEXT');
@@ -453,6 +475,45 @@ function migrate(db) {
   add('cases', 'creator_platform_id', 'TEXT');
   // creator_accounts 新增平台账号ID，供按达人平台ID精确归人（发布/消耗表导入回填）
   add('creator_accounts', 'platform_id', 'TEXT');
+
+  // 机会中心 V2：把旧的作者执行流平滑迁移到热点研判流。旧表保留，仅状态语义更新。
+  db.exec(`UPDATE opportunities SET status = CASE status
+    WHEN '待判断' THEN '待研判'
+    WHEN '已采纳' THEN '值得跟进'
+    WHEN '待匹配创作者' THEN '值得跟进'
+    WHEN '创作中' THEN '方案整理中'
+    WHEN '待发布' THEN '方案整理中'
+    WHEN '已发布' THEN '已输出'
+    WHEN '已验证' THEN '已输出'
+    ELSE status END`);
+  // 清理早期异常枚举；无法识别的状态回到待研判，保留记录本身。
+  db.exec(`UPDATE opportunities SET status='待研判'
+    WHERE status IS NULL OR status='' OR status NOT IN ('待研判','值得跟进','方案整理中','已输出','不采用','已过期','已归档')`);
+  db.exec(`UPDATE opportunities SET platform = CASE
+    WHEN lower(trim(platform)) IN ('b站','bilibili','b?') THEN 'B站'
+    WHEN lower(trim(platform)) IN ('抖音','douyin','dy') THEN '抖音'
+    ELSE trim(platform) END
+    WHERE platform IS NOT NULL AND trim(platform)<>''`);
+  // 历史机会缺平台时优先从关联热点补齐，再从热点来源文本推断。
+  db.exec(`UPDATE opportunities SET platform=(SELECT h.platform FROM hotspots h WHERE h.id=opportunities.hotspot_id)
+    WHERE (platform IS NULL OR platform='') AND hotspot_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM hotspots h WHERE h.id=opportunities.hotspot_id AND h.platform IS NOT NULL AND h.platform<>'')`);
+  db.exec(`UPDATE opportunities SET platform=CASE
+    WHEN hotspot_source LIKE '%B站%' OR lower(hotspot_source) LIKE '%bilibili%' THEN 'B站'
+    WHEN hotspot_source LIKE '%抖音%' OR lower(hotspot_source) LIKE '%douyin%' THEN '抖音'
+    ELSE platform END
+    WHERE (platform IS NULL OR platform='') AND hotspot_source IS NOT NULL`);
+
+  const hotspotLogic = db.prepare("SELECT value FROM settings WHERE key='hotspot_logic_version'").get();
+  if (!hotspotLogic || hotspotLogic.value !== 'focus-industry-v10') {
+    db.exec("DELETE FROM daily_hotspot_snapshot WHERE snap_date=date('now','localtime')");
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('hotspot_logic_version','focus-industry-v10')").run();
+  }
+  const gameNewsLogic = db.prepare("SELECT value FROM settings WHERE key='game_news_source_version'").get();
+  if (!gameNewsLogic || gameNewsLogic.value !== 'multi-source-v2') {
+    db.exec("DELETE FROM game_news WHERE batch_date=date('now','localtime')");
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('game_news_source_version','multi-source-v2')").run();
+  }
 
   // 1) 来源平台标注补全（按平台推断 source_label：B站热门内容/抖音热点榜/微博热点）
   db.prepare(`UPDATE hotspots SET source_label = CASE platform

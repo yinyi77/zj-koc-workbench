@@ -3,11 +3,35 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>杖剑传说 · KOC 内容机会决策与复盘工作台</title>
+  <title>热点机会台 · 热梗发现与方案生成</title>
   <link rel="icon" type="image/png" href="/logo.png">
 </head>
 <body>
   <div id="app"></div>
+  <div id="boot-fallback" role="alert" aria-live="assertive" hidden>
+    <div class="boot-fallback-card">
+      <h1>页面没有正常加载</h1>
+      <p id="boot-fallback-message">前端资源加载失败或启动超时。</p>
+      <p>请先刷新页面；如果仍然失败，请确认服务端 4567 端口可以访问，并清除浏览器缓存后重试。</p>
+      <button type="button" onclick="window.location.reload()">重新加载</button>
+    </div>
+  </div>
+  <noscript>该平台需要启用 JavaScript 才能使用。</noscript>
+  <script>
+    (() => {
+      const showBootError = message => {
+        const app = document.getElementById('app')
+        if (app && app.querySelector('#app-root')) return
+        const panel = document.getElementById('boot-fallback')
+        const text = document.getElementById('boot-fallback-message')
+        if (text && message) text.textContent = message
+        if (panel) panel.hidden = false
+      }
+      window.addEventListener('error', () => showBootError('前端脚本加载失败，可能是发布后浏览器仍在使用旧缓存。'))
+      window.addEventListener('unhandledrejection', () => showBootError('页面启动过程中出现异常，请重新加载。'))
+      window.setTimeout(() => showBootError('页面加载超过 8 秒，请重新加载或检查服务状态。'), 8000)
+    })()
+  </script>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
